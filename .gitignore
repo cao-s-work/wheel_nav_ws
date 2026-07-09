@@ -1,1 +1,13 @@
-build/\ninstall/\nlog/\n*.pyc\n__pycache__/\n.DS_Store\n*.zip\ntest.pcd\n
+build/
+install/
+log/
+*.pyc
+__pycache__/
+*.swp
+*.swo
+*.swn
+*.gv
+*.pdf
+.DS_Store
+*.zip
+test.pcd

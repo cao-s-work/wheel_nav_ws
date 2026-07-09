@@ -23,6 +23,9 @@ zsl_driver_node — ZSL-1W 轮足钢镚 ROS 2 驱动节点。
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from sensor_msgs.msg import BatteryState
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+from std_msgs.msg import Bool, UInt32, Float32
 from std_srvs.srv import Trigger, SetBool
 
 from zsl_driver.sdk_wrapper import SdkWrapper, MODE_STAND, MODE_PASSIVE
@@ -38,6 +41,7 @@ class ZslDriverNode(Node):
         sdk_local_ip = self.declare_parameter("sdk_local_ip", "192.168.168.216").value
         sdk_local_port = self.declare_parameter("sdk_local_port", 43988).value
         sdk_dog_ip = self.declare_parameter("sdk_dog_ip", "192.168.168.168").value
+        sdk_lib_dir = self.declare_parameter("sdk_lib_dir", "").value or None
         read_only = self.declare_parameter("read_only", True).value
         self._cmd_vel_timeout_ms = self.declare_parameter("cmd_vel_timeout_ms", 500).value
         self._speed_scale = self.declare_parameter("speed_scale", 1.0).value
@@ -47,7 +51,7 @@ class ZslDriverNode(Node):
         state_rate = self.declare_parameter("state_publish_rate", 10.0).value
 
         # ——— SDK 封装 ———
-        self._sdk = SdkWrapper(read_only=read_only)
+        self._sdk = SdkWrapper(read_only=read_only, sdk_lib_dir=sdk_lib_dir)
 
         # ——— Service 工厂（对标铜锤 CreateServices） ———
         self._create_services()
@@ -72,6 +76,14 @@ class ZslDriverNode(Node):
         # ——— 定时器 ———
         self._cmd_timer = self.create_timer(1.0 / cmd_rate, self._cmd_tick)
         self._state_timer = self.create_timer(1.0 / state_rate, self._publish_state)
+
+        # ——— 状态 Topic 发布 ———
+        self._pub_connection = self.create_publisher(Bool, "~/connection", 10)
+        self._pub_read_only = self.create_publisher(Bool, "~/read_only", 10)
+        self._pub_ctrl_mode = self.create_publisher(UInt32, "~/ctrl_mode", 10)
+        self._pub_cmd_watchdog = self.create_publisher(Float32, "~/cmd_watchdog", 10)
+        self._pub_battery = self.create_publisher(BatteryState, "~/battery", 10)
+        self._pub_diag = self.create_publisher(DiagnosticArray, "~/status", 10)
 
         self.get_logger().info("ZslDriverNode ready.")
         if read_only:
@@ -174,20 +186,68 @@ class ZslDriverNode(Node):
     # =========================================================================
 
     def _publish_state(self):
-        """
-        10Hz 轮询 SDK 状态，通过日志输出。
-        ZSL-1W SDK 只有 mode/battery/connected，不像铜锤有完整的 RobotState msg。
-        后续可以扩展为 topic 发布。
-        """
+        """10Hz 发布状态 Topic。"""
         snap = self._sdk.snapshot()
-        mode_str = {0: "PASSIVE", 1: "STAND", 18: "MOVE", 51: "LIE_DOWN", -1: "ERR"}.get(
-            snap.mode, str(snap.mode)
-        )
-        self.get_logger().info(
-            f"mode={mode_str}({snap.mode}) battery={snap.battery:.0f}% "
-            f"connected={snap.connected} readonly={self._sdk.read_only}",
-            throttle_duration_sec=5.0,
-        )
+        now = self.get_clock().now()
+
+        # connection (Bool)
+        msg_conn = Bool(data=snap.connected)
+        self._pub_connection.publish(msg_conn)
+
+        # read_only (Bool)
+        msg_ro = Bool(data=self._sdk.read_only)
+        self._pub_read_only.publish(msg_ro)
+
+        # ctrl_mode (UInt32)
+        msg_mode = UInt32(data=snap.mode if snap.mode >= 0 else 0)
+        self._pub_ctrl_mode.publish(msg_mode)
+
+        # cmd_watchdog: cmd_vel age in seconds
+        age_s = (now - self._last_cmd_time).nanoseconds / 1e9 if self._cmd_received else -1.0
+        msg_wd = Float32(data=float(age_s))
+        self._pub_cmd_watchdog.publish(msg_wd)
+
+        # battery (BatteryState)
+        msg_bat = BatteryState()
+        msg_bat.header.stamp = now.to_msg()
+        msg_bat.percentage = float(snap.battery)
+        msg_bat.present = True
+        self._pub_battery.publish(msg_bat)
+
+        # status (DiagnosticArray)
+        diag = DiagnosticArray()
+        diag.header.stamp = now.to_msg()
+
+        sdk_status = DiagnosticStatus()
+        sdk_status.name = "zsl_driver/sdk"
+        sdk_status.level = DiagnosticStatus.OK if snap.connected else DiagnosticStatus.ERROR
+        sdk_status.message = "connected" if snap.connected else "disconnected"
+        sdk_status.values = [
+            KeyValue(key="connected", value=str(snap.connected)),
+            KeyValue(key="read_only", value=str(self._sdk.read_only)),
+            KeyValue(key="ctrl_mode", value=str(snap.mode)),
+            KeyValue(key="battery_percent", value=f"{snap.battery:.1f}"),
+            KeyValue(key="cmd_watchdog_s", value=f"{age_s:.3f}"),
+        ]
+
+        cmd_status = DiagnosticStatus()
+        cmd_status.name = "zsl_driver/cmd_vel"
+        if age_s < 0:
+            cmd_status.level = DiagnosticStatus.WARN
+            cmd_status.message = "no cmd_vel received yet"
+        elif age_s > self._cmd_vel_timeout_ms / 1000.0:
+            cmd_status.level = DiagnosticStatus.WARN
+            cmd_status.message = f"cmd_vel timeout ({age_s:.2f}s > {self._cmd_vel_timeout_ms}ms)"
+        else:
+            cmd_status.level = DiagnosticStatus.OK
+            cmd_status.message = f"cmd_vel active (age={age_s:.3f}s)"
+        cmd_status.values = [
+            KeyValue(key="last_cmd_age_s", value=f"{age_s:.3f}"),
+            KeyValue(key="timeout_ms", value=str(self._cmd_vel_timeout_ms)),
+        ]
+
+        diag.status = [sdk_status, cmd_status]
+        self._pub_diag.publish(diag)
 
     # =========================================================================
     # 生命周期

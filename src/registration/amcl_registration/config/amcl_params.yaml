@@ -3,7 +3,7 @@ amcl:
     use_sim_time: false
 
     global_frame_id: "map"
-    odom_frame_id: "odom"
+    odom_frame_id: "camera_init"
     base_frame_id: "base_link"
 
     scan_topic: "/scan"

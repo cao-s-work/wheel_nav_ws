@@ -14,6 +14,11 @@ def generate_launch_description():
     nav2_param_path = launch.substitutions.LaunchConfiguration(
         'params_file',
         default=os.path.join(fishbot_navigation2_dir, 'config', 'nav2_params.yaml'))
+    map_yaml_path = launch.substitutions.LaunchConfiguration(
+        'map_file',
+        default='')
+
+    rviz = launch.substitutions.LaunchConfiguration('rviz', default='false')
 
     return launch.LaunchDescription([
         launch.actions.DeclareLaunchArgument(
@@ -25,6 +30,16 @@ def generate_launch_description():
             'params_file',
             default_value=nav2_param_path,
             description='Full path to param file to load'
+        ),
+        launch.actions.DeclareLaunchArgument(
+            'map_file',
+            default_value=map_yaml_path,
+            description='Path to map.yaml for map_server'
+        ),
+        launch.actions.DeclareLaunchArgument(
+            'rviz',
+            default_value='false',
+            description='Launch RViz2'
         ),
 
         launch.actions.IncludeLaunchDescription(
@@ -42,7 +57,7 @@ def generate_launch_description():
             executable='map_server',
             name='map_server',
             output='screen',
-            parameters=[{'yaml_filename': os.path.join(fishbot_navigation2_dir, 'maps', 'test_map.yaml')},
+            parameters=[{'yaml_filename': map_yaml_path},
                        {'use_sim_time': use_sim_time}]),
 
         launch_ros.actions.Node(
@@ -60,7 +75,8 @@ def generate_launch_description():
             name='rviz2',
             arguments=['-d', rviz_config_dir],
             parameters=[{'use_sim_time': use_sim_time}],
-            output='screen'),
+            output='screen',
+            condition=launch.conditions.IfCondition(rviz)),
     ])
 
 

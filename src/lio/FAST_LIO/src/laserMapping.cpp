@@ -150,12 +150,12 @@ std::string world_frame_id = "odom";
 std::string next_frame_id = "base_link";
 
 // ===== MID360 斜装外参：base_link -> livox_frame =====
-// 雷达在 base_link 前方 0.37m，绕 Y 轴下倾约 17°。
+// LiDAR 在 base_link 前方 0.18m、上方 0.30m，绕 Y 轴下倾 15°。
 // 这里必须和 pointcloud_to_laserscan_launch.py 里的静态 TF 保持一致。
-static constexpr double LIDAR_MOUNT_X = 0.37;
+static constexpr double LIDAR_MOUNT_X = 0.18;
 static constexpr double LIDAR_MOUNT_Y = 0.0;
-static constexpr double LIDAR_MOUNT_Z = 0.0;
-static constexpr double LIDAR_MOUNT_PITCH_DEG = 17.0;
+static constexpr double LIDAR_MOUNT_Z = 0.30;
+static constexpr double LIDAR_MOUNT_PITCH_DEG = 16.0;  // 取反：qBaseToLivox 是 base→livox，变换点云时需取逆
 
 static inline Eigen::Quaterniond qBaseToLivox()
 {

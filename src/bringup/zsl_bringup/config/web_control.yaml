@@ -1,0 +1,13 @@
+# ZSL-1W Web Control 配置（bringup 引用）
+
+web:
+  port: 8080
+  host: "0.0.0.0"
+
+safety:
+  deadman_timeout_s: 0.3
+  speed_level: "slow"
+  lateral_enabled: false
+  vx_max: 1.0
+  vy_max: 1.0
+  wz_max: 1.0

@@ -22,6 +22,7 @@ setup(
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name, ['README.md']),
         _recursive_data_files('launch'),
     ],
     install_requires=['setuptools'],
@@ -33,6 +34,7 @@ setup(
     entry_points={
         'console_scripts': [
             'zsl_driver_node = zsl_driver.zsl_driver_node:main',
+            'sdk_check = zsl_driver.sdk_check:main',
         ],
     },
 )

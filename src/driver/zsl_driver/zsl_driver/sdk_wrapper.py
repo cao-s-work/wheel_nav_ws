@@ -18,20 +18,74 @@ import threading
 from dataclasses import dataclass
 
 
-# ——— SDK 库加载（内嵌于本工程，不依赖外部路径） ———
+# ——— SDK 库路径解析（优先级：参数 sdk_lib_dir > 环境变量 > 自动识别 > 包内 fallback） ———
 import ctypes as _ctypes
+import platform as _platform
 
-_SDK_LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sdk_lib")
-if _SDK_LIB not in sys.path:
-    sys.path.insert(0, _SDK_LIB)
 
-# 预加载依赖 so，避免依赖 LD_LIBRARY_PATH
+def _resolve_sdk_lib_dir(explicit_dir: str | None = None) -> str | None:
+    """
+    三级 fallback 解析 SDK .so 目录，按优先级返回第一个有效的路径。
+    Returns: 有效目录绝对路径，或 None。
+    """
+    candidates: list[str] = []
+
+    # 1) 显式参数（最高优先级）
+    if explicit_dir:
+        candidates.append(os.path.abspath(explicit_dir))
+
+    # 2) 环境变量
+    env_dir = os.environ.get("ZSL_SDK_LIB_DIR")
+    if env_dir:
+        candidates.append(os.path.abspath(env_dir))
+
+    # 3) 自动识别 aarch64 / x86_64
+    arch = _platform.machine()
+    auto_path = os.path.join(
+        os.path.expanduser("~"),
+        "gb_ws2", "sdk", "genisom_l1_sdk-main", "lib", "zsl-1w", arch,
+    )
+    candidates.append(auto_path)
+
+    # 4) 包内 sdk_lib（fallback）
+    builtin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sdk_lib")
+    candidates.append(builtin)
+
+    for d in candidates:
+        d = os.path.abspath(d)
+        py_binding = os.path.join(d, f"mc_sdk_zsl_1w_py.cpython-{sys.version_info.major}{sys.version_info.minor}-{arch}-linux-gnu.so")
+        if os.path.isfile(py_binding):
+            return d
+
+    return None  # 全部未找到
+
+
+_SDK_LIB_DIR: str | None = _resolve_sdk_lib_dir()
+if _SDK_LIB_DIR is None:
+    raise RuntimeError(
+        "ZSL-1W SDK .so 未找到！\n"
+        "  请通过以下任一方式指定：\n"
+        "  1) 参数: sdk_lib_dir:=/path/to/sdk\n"
+        "  2) 环境变量: export ZSL_SDK_LIB_DIR=/path/to/sdk\n"
+        "  3) 将 .so 放入 ~/gb_ws2/sdk/.../lib/zsl-1w/{arch}/\n"
+        "  4) 放入本包 zsl_driver/sdk_lib/ 目录\n"
+        f"  当前架构: {_platform.machine()}, Python {sys.version_info.major}.{sys.version_info.minor}"
+    )
+
+# 注册到 Python path
+if _SDK_LIB_DIR not in sys.path:
+    sys.path.insert(0, _SDK_LIB_DIR)
+
+# 预加载 C++ 依赖 so（libmc_sdk_zsl_1w_*.so），避免依赖 LD_LIBRARY_PATH
 try:
-    _ctypes.CDLL(os.path.join(_SDK_LIB, "libmc_sdk_zsl_1w_aarch64.so"), mode=_ctypes.RTLD_GLOBAL)
+    for _fname in os.listdir(_SDK_LIB_DIR):
+        if _fname.startswith("libmc_sdk_") and _fname.endswith(".so"):
+            _ctypes.CDLL(os.path.join(_SDK_LIB_DIR, _fname), mode=_ctypes.RTLD_GLOBAL)
 except Exception:
     pass
 
-os.environ["LD_LIBRARY_PATH"] = _SDK_LIB + ":" + os.environ.get("LD_LIBRARY_PATH", "")
+# 注入子进程的 LD_LIBRARY_PATH
+os.environ["LD_LIBRARY_PATH"] = _SDK_LIB_DIR + ":" + os.environ.get("LD_LIBRARY_PATH", "")
 
 import mc_sdk_zsl_1w_py as _sdk  # noqa: E402
 
@@ -72,10 +126,11 @@ class SdkWrapper:
     - 灯/头/姿态/摄像头 → 不支持
     """
 
-    def __init__(self, read_only: bool = True):
+    def __init__(self, read_only: bool = True, sdk_lib_dir: str | None = None):
         self._read_only = read_only
         self._app = None
         self._cache = RobotDataCache(lock=threading.Lock())
+        self._sdk_lib_dir = sdk_lib_dir  # 记录用于诊断
 
     # =========================================================================
     # 连接管理

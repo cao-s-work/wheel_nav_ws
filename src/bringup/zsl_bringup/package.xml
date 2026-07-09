@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>zsl_bringup</name>
+  <version>0.1.0</version>
+  <description>ZSL-1W 统一 bringup — modular launch files for robot_base, mapping, localization, navigation, web</description>
+  <maintainer email="nvidia@localhost.local">nvidia</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>zsl_driver</exec_depend>
+  <exec_depend>zsl_web_control</exec_depend>
+  <exec_depend>livox_ros_driver2</exec_depend>
+  <exec_depend>fast_lio</exec_depend>
+  <exec_depend>pointcloud_to_laserscan</exec_depend>
+  <exec_depend>robot_navigation2</exec_depend>
+  <exec_depend>amcl_registration</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

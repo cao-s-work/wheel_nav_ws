@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZSL-1W 控制台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="root">
+  <header>
+    <h1>ZSL-1W 钢镚控制台</h1>
+    <span id="ws-status">离线</span>
+  </header>
+
+  <!-- Dashboard -->
+  <section id="dashboard">
+    <h2>状态</h2>
+    <div class="grid">
+      <div class="card"><label>SDK</label><span id="sdk-connected">--</span></div>
+      <div class="card"><label>电量</label><span id="battery">--</span></div>
+      <div class="card"><label>模式</label><span id="ctrl-mode">--</span></div>
+      <div class="card"><label>安全锁</label><span id="read-only">--</span></div>
+    </div>
+  </section>
+
+  <!-- 运动控制 -->
+  <section id="motion">
+    <h2>运动控制</h2>
+    <div class="btn-row">
+      <button onclick="api('POST','/api/stand')">站立</button>
+      <button onclick="api('POST','/api/lie')">趴下</button>
+      <button onclick="api('POST','/api/crawl')">匍匐</button>
+      <button class="danger" onclick="api('POST','/api/estop')">急停</button>
+    </div>
+    <div class="btn-row">
+      <button onclick="api('POST','/api/read_only',{read_only:true})">上锁</button>
+      <button onclick="api('POST','/api/read_only',{read_only:false})">解锁</button>
+    </div>
+
+    <!-- 虚拟摇杆 -->
+    <h3>虚拟摇杆</h3>
+    <div class="joystick-container">
+      <canvas id="joystick" width="200" height="200"></canvas>
+    </div>
+    <div>
+      <label>速度档位:</label>
+      <select id="speed-level" onchange="setSpeedLevel(this.value)">
+        <option value="slow" selected>慢</option>
+        <option value="normal">中</option>
+        <option value="fast">快</option>
+      </select>
+    </div>
+    <div id="teleop-values">vx: 0.00 vy: 0.00 wz: 0.00</div>
+  </section>
+
+  <!-- 导航 -->
+  <section id="navigation">
+    <h2>导航</h2>
+    <div class="btn-row">
+      <button onclick="sendNavGoal()">发送 Goal</button>
+      <button onclick="api('POST','/api/nav/cancel')">取消</button>
+      <button onclick="api('POST','/api/nav/clear_costmaps')">清 costmap</button>
+    </div>
+    <div>
+      <label>X: <input id="nav-x" type="number" step="0.1" value="0"></label>
+      <label>Y: <input id="nav-y" type="number" step="0.1" value="0"></label>
+      <label>Yaw°: <input id="nav-yaw" type="number" step="1" value="0"></label>
+    </div>
+  </section>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
