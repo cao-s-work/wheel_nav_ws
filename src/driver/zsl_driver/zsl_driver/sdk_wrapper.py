@@ -138,14 +138,16 @@ class SdkWrapper:
 
     def lie_down(self) -> bool:
         """
-        安全趴下：先 standDown 匍匐 → 再 passive。
+        安全趴下：先 crawl 匍匐 → cancelCrawl → passive。
         对标铜锤 LieDown。
         """
         if not self._app:
             return False
         try:
-            self._app.standDown()
+            self._app.crawl(0.3, 0.0, 0.0)
             time.sleep(1.5)
+            self._app.cancelCrawl()
+            time.sleep(0.5)
             self._app.passive()
             return True
         except Exception as e:
@@ -153,14 +155,14 @@ class SdkWrapper:
             return False
 
     def crawl(self) -> bool:
-        """匍匐/下蹲。ZSL-1W: standDown()。"""
+        """匍匐/下蹲。ZSL-1W: crawl(vx,vy,yaw_rate) 慢速匍匐。"""
         if not self._app:
             return False
         try:
-            self._app.standDown()
+            self._app.crawl(0.3, 0.0, 0.0)
             return True
         except Exception as e:
-            print(f"[SdkWrapper] crawl/standDown failed: {e}")
+            print(f"[SdkWrapper] crawl failed: {e}")
             return False
 
     # =========================================================================
