@@ -24,6 +24,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Bool, UInt32, Float32
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 
 # Web 框架
 try:
@@ -105,6 +106,14 @@ class WebControlNode(Node):
         # cmd_vel publisher (到 cmd_vel_mux)
         self._cmd_pub = self.create_publisher(Twist, "cmd_vel_teleop", 10)
 
+        # teleop_active 发布 (transient-local QoS，mux 后启动也能收到)
+        self._teleop_active = False
+        self._teleop_active_pub = self.create_publisher(
+            Bool, "/web/teleop_active",
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL),
+        )
+
         # 状态发布定时器 10Hz
         self._state_timer = self.create_timer(0.1, self._publish_state)
 
@@ -154,6 +163,8 @@ class WebControlNode(Node):
         app.router.add_post("/api/crawl", self._api_crawl)
         app.router.add_post("/api/estop", self._api_estop)
         app.router.add_post("/api/read_only", self._api_read_only)
+        app.router.add_post("/api/manual", self._api_manual)
+        app.router.add_post("/api/auto", self._api_auto)
         app.router.add_post("/api/heartbeat", self._api_heartbeat)
         app.router.add_post("/api/teleop", self._api_teleop)
         app.router.add_get("/api/state", self._api_state)
@@ -176,6 +187,20 @@ class WebControlNode(Node):
 
     # ---- WebSocket ----
 
+    def _set_teleop_active(self, active: bool):
+        """切换人工接管模式。上升沿取消 Nav2，下降沿清零。"""
+        changed = active != self._teleop_active
+        self._teleop_active = active
+        if not active:
+            with self._teleop_lock:
+                self._teleop_vx = 0.0
+                self._teleop_vy = 0.0
+                self._teleop_wz = 0.0
+            self._cmd_pub.publish(Twist())
+        self._teleop_active_pub.publish(Bool(data=active))
+        if changed and active:
+            self._nav2_client.cancel_goal()
+
     async def _ws_handler(self, request):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
@@ -192,18 +217,30 @@ class WebControlNode(Node):
                     break
         finally:
             self._ws_mgr.remove(ws)
-            # 连接断开 → 清零该客户端的 teleop 指令
+            # 连接断开 → 清零 teleop，但不退出人工模式（防止 Nav2 恢复）
             with self._teleop_lock:
                 self._teleop_vx = 0.0
                 self._teleop_vy = 0.0
                 self._teleop_wz = 0.0
+            self._cmd_pub.publish(Twist())
+            # 不调用 _set_teleop_active(False)
         return ws
 
     async def _handle_ws_msg(self, ws, data):
         msg_type = data.get("type", "")
         if msg_type == "heartbeat":
             self._safety.heartbeat()
-        elif msg_type == "teleop":
+            return
+        if msg_type == "control_mode":
+            mode = data.get("mode", "")
+            if mode == "manual":
+                self._set_teleop_active(True)
+            elif mode == "auto":
+                self._set_teleop_active(False)
+            return
+        if msg_type == "teleop":
+            if not self._teleop_active:
+                return
             vx = float(data.get("vx", 0))
             vy = float(data.get("vy", 0))
             wz = float(data.get("wz", 0))
@@ -232,6 +269,14 @@ class WebControlNode(Node):
         ro = bool(body.get("read_only", True))
         self._safety.read_only = ro
         return web.json_response(self._ros_api.set_read_only(ro))
+
+    async def _api_manual(self, request):
+        self._set_teleop_active(True)
+        return web.json_response({"ok": True, "mode": "manual"})
+
+    async def _api_auto(self, request):
+        self._set_teleop_active(False)
+        return web.json_response({"ok": True, "mode": "auto"})
 
     async def _api_heartbeat(self, request):
         self._safety.heartbeat()
@@ -289,12 +334,13 @@ class WebControlNode(Node):
         self._cmd_pub.publish(twist)
 
     def _check_deadman(self):
-        """20Hz deadman 检查 — 速度心跳超时归零 teleop。"""
-        if not self._safety.teleop_alive:
+        """20Hz deadman 检查 — 速度心跳超时归零，但不退出人工模式。"""
+        if self._teleop_active and not self._safety.teleop_alive:
             with self._teleop_lock:
                 self._teleop_vx = 0.0
                 self._teleop_vy = 0.0
                 self._teleop_wz = 0.0
+            self._cmd_pub.publish(Twist())
 
     # =========================================================================
     # 生命周期

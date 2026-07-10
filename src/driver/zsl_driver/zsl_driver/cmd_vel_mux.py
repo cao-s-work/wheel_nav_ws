@@ -2,24 +2,32 @@
 cmd_vel_mux.py — 多路 cmd_vel 合并 + watchdog。
 
 订阅:
-  /cmd_vel          (Nav2 velocity_smoother 平滑后)
-  /cmd_vel_teleop   (Web 遥控)
+  /cmd_vel           (Nav2 velocity_smoother 平滑后)
+  /cmd_vel_teleop    (Web 遥控)
+  /web/teleop_active (Web 人工接管状态, transient-local QoS)
 
-优先级: Nav2 > teleop
-  - Nav2 有活跃消息（500ms 内） → 转发 Nav2
-  - 否则 → 转发 teleop（teleop watchdog 500ms 超时则零速）
+优先级:
+  teleop_active=true 且 teleop_alive → teleop
+  teleop_active=true 且 teleop 超时   → zero（绝不回退 Nav2）
+  teleop_active=false 且 nav_alive   → Nav2
+  其他                               → zero
 
 发布:
   /cmd_vel_selected → safety_node
-
-注意:
-  - 所有时钟使用 time.monotonic()，避免系统校时跳变
-  - 不依赖 threading.Lock 重入
 """
 import time
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool
+
+
+TELEOP_ACTIVE_QOS = QoSProfile(
+    depth=1,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
 
 
 class CmdVelMux(Node):
@@ -34,6 +42,7 @@ class CmdVelMux(Node):
         self._last_nav_time = 0.0
         self._last_teleop_cmd = Twist()
         self._last_teleop_time = 0.0
+        self._teleop_active = False
 
         # 订阅
         self._nav_sub = self.create_subscription(
@@ -41,6 +50,9 @@ class CmdVelMux(Node):
         )
         self._teleop_sub = self.create_subscription(
             Twist, "cmd_vel_teleop", self._teleop_cb, 10
+        )
+        self._teleop_active_sub = self.create_subscription(
+            Bool, "/web/teleop_active", self._teleop_active_cb, TELEOP_ACTIVE_QOS
         )
 
         # 发布
@@ -62,17 +74,42 @@ class CmdVelMux(Node):
         self._last_teleop_cmd = msg
         self._last_teleop_time = time.monotonic()
 
+    def _teleop_active_cb(self, msg: Bool):
+        new_active = bool(msg.data)
+        if new_active and not self._teleop_active:
+            # 刚进入手动模式，清除历史命令
+            self._last_teleop_cmd = Twist()
+            self._last_teleop_time = 0.0
+        if not new_active:
+            # 退出手动模式，也清除历史命令
+            self._last_teleop_cmd = Twist()
+            self._last_teleop_time = 0.0
+        self._teleop_active = new_active
+
     def _tick(self):
         now = time.monotonic()
-        nav_alive = (now - self._last_nav_time) < self._nav_timeout_s
-        teleop_alive = (now - self._last_teleop_time) < self._teleop_timeout_s
 
-        if nav_alive:
-            self._sel_pub.publish(self._last_nav_cmd)
-        elif teleop_alive:
-            self._sel_pub.publish(self._last_teleop_cmd)
+        nav_alive = (
+            self._last_nav_time > 0.0
+            and now - self._last_nav_time < self._nav_timeout_s
+        )
+        teleop_alive = (
+            self._last_teleop_time > 0.0
+            and now - self._last_teleop_time < self._teleop_timeout_s
+        )
+
+        if self._teleop_active:
+            # 处于人工接管模式时，绝不回退到 Nav2
+            if teleop_alive:
+                selected = self._last_teleop_cmd
+            else:
+                selected = Twist()
+        elif nav_alive:
+            selected = self._last_nav_cmd
         else:
-            self._sel_pub.publish(Twist())
+            selected = Twist()
+
+        self._sel_pub.publish(selected)
 
 
 def main(args=None):
