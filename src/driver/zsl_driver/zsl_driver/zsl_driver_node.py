@@ -188,14 +188,14 @@ class ZslDriverNode(Node):
     def _srv_set_read_only(self, req, resp):
         if not req.data and self._estop_latched:
             resp.success = False
-            resp.message = "cannot unlock while estop is latched"
+            resp.message = "reset estop before unlocking"
             return resp
         ok = self._sdk.set_read_only(req.data)
         resp.success = ok
         resp.message = (
-            f"read_only={'true' if req.data else 'false'}"
+            f"read_only={req.data}"
             if ok
-            else "failed to change read_only"
+            else "failed to change read_only state"
         )
         return resp
 

@@ -267,11 +267,21 @@ class SdkWrapper:
         except Exception:
             return False
 
-    def set_read_only(self, ro: bool):
-        """上锁：先发零速度再置位，避免锁住运动中的狗。"""
+    def set_read_only(self, ro: bool) -> bool:
+        """上锁：先发零速度再置位，避免锁住运动中的狗。
+        解锁：需 SDK 已连接。
+        返回 True 表示状态变更成功。"""
         if ro:
-            self.stop_force()
-        self._read_only = ro
+            stopped = self.stop_force()
+            # 无论停车是否成功，先阻止后续普通 move
+            self._read_only = True
+            if not stopped:
+                return False
+            return True
+        if not self.connected:
+            return False
+        self._read_only = False
+        return True
 
     def emergency_stop(self) -> bool:
         """急停：立即零速 + passive，不允许 sleep/crawl。"""
