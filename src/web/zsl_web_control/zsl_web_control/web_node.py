@@ -117,6 +117,14 @@ class WebControlNode(Node):
         # 状态发布定时器 10Hz
         self._state_timer = self.create_timer(0.1, self._publish_state)
 
+        # 订阅驱动真实状态（驱动是真值源）
+        self.create_subscription(
+            Bool, "/zsl_driver_node/read_only", self._on_driver_read_only, 10
+        )
+        self.create_subscription(
+            Bool, "/zsl_driver_node/estop_latched", self._on_driver_estop, 10
+        )
+
         # 死区心跳定时器
         self._heartbeat_timer = self.create_timer(0.05, self._check_deadman)
 
@@ -266,9 +274,8 @@ class WebControlNode(Node):
 
     async def _api_read_only(self, request):
         body = await request.json()
-        ro = bool(body.get("read_only", True))
-        self._safety.read_only = ro
-        return web.json_response(self._ros_api.set_read_only(ro))
+        requested = bool(body.get("read_only", True))
+        return web.json_response(self._ros_api.set_read_only(requested))
 
     async def _api_manual(self, request):
         self._set_teleop_active(True)
@@ -341,6 +348,13 @@ class WebControlNode(Node):
                 self._teleop_vy = 0.0
                 self._teleop_wz = 0.0
             self._cmd_pub.publish(Twist())
+
+    def _on_driver_read_only(self, msg: Bool):
+        """驱动是真值源 — Web 只同步不自行认定。"""
+        self._safety.read_only = msg.data
+
+    def _on_driver_estop(self, msg: Bool):
+        """订阅驱动 estop_latched 状态。"""
 
     # =========================================================================
     # 生命周期
