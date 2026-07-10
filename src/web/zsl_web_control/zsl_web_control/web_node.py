@@ -17,6 +17,7 @@ import os
 import json
 import threading
 import time
+import uuid
 import asyncio
 
 import rclpy
@@ -134,6 +135,12 @@ class WebControlNode(Node):
         self._teleop_wz = 0.0
         self._teleop_lock = threading.Lock()
 
+        # 单控制者 lease
+        self._controller_id: str | None = None
+        self._controller_expire_time = 0.0
+        LEASE_TIMEOUT = 5.0
+        self._lease_timeout_s = LEASE_TIMEOUT
+
         # Web 服务器线程
         self._web_thread = None
         self._app = None
@@ -196,7 +203,7 @@ class WebControlNode(Node):
     # ---- WebSocket ----
 
     def _set_teleop_active(self, active: bool):
-        """切换人工接管模式。上升沿取消 Nav2，下降沿清零。"""
+        """切换人工接管模式。上升沿取消 Nav2，下降沿清零 + 释放 lease。"""
         changed = active != self._teleop_active
         self._teleop_active = active
         if not active:
@@ -205,27 +212,38 @@ class WebControlNode(Node):
                 self._teleop_vy = 0.0
                 self._teleop_wz = 0.0
             self._cmd_pub.publish(Twist())
+            self._release_lease()
         self._teleop_active_pub.publish(Bool(data=active))
         if changed and active:
             self._nav2_client.cancel_goal()
+
+    def _release_lease(self):
+        """释放控制权 lease。"""
+        self._controller_id = None
+        self._controller_expire_time = 0.0
 
     async def _ws_handler(self, request):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         self._ws_mgr.add(ws)
+        client_id = str(uuid.uuid4())
+        ws.client_id = client_id
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
                     try:
                         data = json.loads(msg.data)
-                        await self._handle_ws_msg(ws, data)
+                        await self._handle_ws_msg(ws, data, client_id)
                     except Exception:
                         pass
                 elif msg.type == web.WSMsgType.ERROR:
                     break
         finally:
             self._ws_mgr.remove(ws)
-            # 连接断开 → 清零 teleop，但不退出人工模式（防止 Nav2 恢复）
+            # 该连接断开 → 如果是 controller 则释放 lease
+            if self._controller_id == client_id:
+                self._release_lease()
+            # 清零全局 teleop
             with self._teleop_lock:
                 self._teleop_vx = 0.0
                 self._teleop_vy = 0.0
@@ -234,7 +252,7 @@ class WebControlNode(Node):
             # 不调用 _set_teleop_active(False)
         return ws
 
-    async def _handle_ws_msg(self, ws, data):
+    async def _handle_ws_msg(self, ws, data, client_id: str):
         msg_type = data.get("type", "")
         if msg_type == "heartbeat":
             self._safety.heartbeat()
@@ -242,6 +260,9 @@ class WebControlNode(Node):
         if msg_type == "control_mode":
             mode = data.get("mode", "")
             if mode == "manual":
+                # 手动接管：获取控制权 lease
+                self._controller_id = client_id
+                self._controller_expire_time = time.monotonic() + self._lease_timeout_s
                 self._set_teleop_active(True)
             elif mode == "auto":
                 self._set_teleop_active(False)
@@ -249,6 +270,14 @@ class WebControlNode(Node):
         if msg_type == "teleop":
             if not self._teleop_active:
                 return
+            if client_id != self._controller_id:
+                await ws.send_json({
+                    "type": "error",
+                    "message": "control lease not held",
+                })
+                return
+            # 刷新 lease 超时
+            self._controller_expire_time = time.monotonic() + self._lease_timeout_s
             vx = float(data.get("vx", 0))
             vy = float(data.get("vy", 0))
             wz = float(data.get("wz", 0))
@@ -341,7 +370,16 @@ class WebControlNode(Node):
         self._cmd_pub.publish(twist)
 
     def _check_deadman(self):
-        """20Hz deadman 检查 — 速度心跳超时归零，但不退出人工模式。"""
+        """20Hz deadman 检查 — 速度心跳超时归零；lease 超时释放控制权。"""
+        now = time.monotonic()
+        # lease 超时 → 释放控制权（5s 无 teleop）
+        if (
+            self._controller_id is not None
+            and now > self._controller_expire_time
+        ):
+            self._release_lease()
+            self._set_teleop_active(False)
+        # 速度心跳超时 → 归零
         if self._teleop_active and not self._safety.teleop_alive:
             with self._teleop_lock:
                 self._teleop_vx = 0.0
@@ -354,7 +392,9 @@ class WebControlNode(Node):
         self._safety.read_only = msg.data
 
     def _on_driver_estop(self, msg: Bool):
-        """订阅驱动 estop_latched 状态。"""
+        """急停锁存 → 释放控制权 lease。"""
+        if msg.data:
+            self._release_lease()
 
     # =========================================================================
     # 生命周期
