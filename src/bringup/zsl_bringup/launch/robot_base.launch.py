@@ -84,18 +84,22 @@ def generate_launch_description():
         }],
     )
 
-    # 6. safety_node (限速/加速度/watchdog/estop → safe)
+    # 6. cmd_vel_safety (限速/加速度/watchdog/estop → safe)
     safety_node = Node(
         package="zsl_driver",
-        executable="safety_node",
-        name="safety_node",
+        executable="cmd_vel_safety",
+        name="cmd_vel_safety",
         output="screen",
         parameters=[{
-            "max_linear_vel": 0.5,
-            "max_angular_vel": 1.0,
-            "max_linear_accel": 2.0,
-            "max_angular_accel": 3.0,
-            "watchdog_timeout_s": 0.5,
+            "publish_rate": 50.0,
+            "watchdog_timeout": 0.5,
+            "max_linear_vel": 0.30,
+            "max_reverse_vel": 0.15,
+            "max_lateral_vel": 0.0,
+            "max_angular_vel": 0.50,
+            "max_linear_accel": 0.30,
+            "max_lateral_accel": 0.0,
+            "max_angular_accel": 0.50,
         }],
     )
 
