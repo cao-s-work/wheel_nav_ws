@@ -127,9 +127,16 @@ class ZslDriverNode(Node):
         return resp
 
     def _srv_lie_down(self, req, resp):
+        if self._sdk.action_active:
+            resp.success = False
+            resp.message = "action already in progress"
+            return resp
         ok = self._sdk.lie_down()
         resp.success = ok
-        resp.message = "ok" if ok else "lie_down failed"
+        resp.message = (
+            "action started" if ok
+            else "lie_down rejected (read_only or already active)"
+        )
         return resp
 
     def _srv_crawl(self, req, resp):
@@ -219,6 +226,8 @@ class ZslDriverNode(Node):
             return
         if not self._sdk.connected:
             return
+        if self._sdk.action_active:
+            return
         if not self._cmd_received:
             return
 
@@ -300,6 +309,7 @@ class ZslDriverNode(Node):
             KeyValue(key="connected", value=str(snap.connected)),
             KeyValue(key="read_only", value=str(self._sdk.read_only)),
             KeyValue(key="estop_latched", value=str(self._estop_latched)),
+            KeyValue(key="action_active", value=str(self._sdk.action_active)),
             KeyValue(key="move_failure_count", value=str(self._move_failure_count)),
             KeyValue(key="ctrl_mode", value=str(snap.mode)),
             KeyValue(key="battery_percent", value=f"{snap.battery:.1f}"),
@@ -311,6 +321,12 @@ class ZslDriverNode(Node):
         if self._estop_latched:
             cmd_status.level = DiagnosticStatus.ERROR
             cmd_status.message = "emergency stop latched"
+        elif self._sdk.action_active:
+            cmd_status.level = DiagnosticStatus.WARN
+            cmd_status.message = (
+                f"action in progress"
+                + (f": {self._sdk.action_error}" if self._sdk.action_error else "")
+            )
         elif age_s < 0:
             cmd_status.level = DiagnosticStatus.WARN
             cmd_status.message = "no cmd_vel received yet"
