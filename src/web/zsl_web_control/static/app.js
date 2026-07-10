@@ -183,7 +183,13 @@ function updateConnectionIndicators() {
 
 function applyState(state) {
   app.state = state;
-  app.manual = state?.control?.mode === "manual";
+  const newManual = state?.control?.mode === "manual";
+  const hasController = state?.control?.controller_present;
+  app.manual = newManual;
+  // 自动获取控制租约：手动模式但未持有租约时自动发起
+  if (newManual && !hasController && app.socketOnline) {
+    wsSend({ type: "control_mode", mode: "manual" });
+  }
   renderState();
 }
 
