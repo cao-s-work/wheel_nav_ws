@@ -57,6 +57,7 @@ class ZslDriverNode(Node):
         # ——— 急停 / 故障状态（必须在 services 和 timers 之前初始化） ———
         self._estop_latched = False
         self._move_failure_count = 0
+        self._battery_logged = False
         self._last_cmd = Twist()
         self._cmd_received = False
         self._last_cmd_monotonic = time.monotonic()
@@ -271,7 +272,19 @@ class ZslDriverNode(Node):
         # battery (BatteryState)
         msg_bat = BatteryState()
         msg_bat.header.stamp = now.to_msg()
-        msg_bat.percentage = float(snap.battery)
+        raw_battery = float(snap.battery)
+        if not self._battery_logged:
+            self.get_logger().info(
+                f"SDK battery raw value: {snap.battery} (type={type(snap.battery).__name__})"
+            )
+            self._battery_logged = True
+        if raw_battery < 0:
+            percentage = float("nan")
+        elif raw_battery > 1.0:
+            percentage = raw_battery / 100.0
+        else:
+            percentage = raw_battery
+        msg_bat.percentage = max(0.0, min(1.0, percentage))
         msg_bat.present = True
         self._pub_battery.publish(msg_bat)
 
