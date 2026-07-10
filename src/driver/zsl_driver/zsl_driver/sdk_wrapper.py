@@ -253,14 +253,14 @@ class SdkWrapper:
             self._action_thread = None
 
     def crawl(self) -> bool:
-        """匍匐/下蹲。原地匍匐（不前进）。"""
+        """匍匐/下蹲。使用 SDK lieDown() — 站低、关节锁定。"""
         if self._action_active:
             return False
         if not self._app or self._read_only:
             return False
         try:
             with self._lock:
-                self._app.crawl(0.0, 0.0, 0.0)
+                self._app.lieDown()
             return True
         except Exception as e:
             print(f"[SdkWrapper] crawl failed: {e}")
