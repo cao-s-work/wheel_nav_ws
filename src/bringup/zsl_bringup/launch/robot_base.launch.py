@@ -84,7 +84,7 @@ def generate_launch_description():
         }],
     )
 
-    # 6. cmd_vel_safety (限速/加速度/watchdog/estop → safe)
+    # 6. cmd_vel_safety (限速/加速度/watchdog/estop/read_only → safe)
     safety_node = Node(
         package="zsl_driver",
         executable="cmd_vel_safety",
@@ -92,15 +92,19 @@ def generate_launch_description():
         output="screen",
         parameters=[{
             "publish_rate": 50.0,
-            "watchdog_timeout": 0.5,
-            "max_linear_vel": 0.30,
-            "max_reverse_vel": 0.15,
-            "max_lateral_vel": 0.0,
-            "max_angular_vel": 0.50,
-            "max_linear_accel": 0.30,
-            "max_lateral_accel": 0.0,
-            "max_angular_accel": 0.50,
+            "input_timeout_s": 0.30,
+            "max_vx": 0.30,
+            "min_vx": -0.15,
+            "max_vy": 0.0,
+            "max_wz": 0.50,
+            "max_ax": 0.30,
+            "max_ay": 0.0,
+            "max_aw": 0.50,
         }],
+        remappings=[
+            ("~/estop_latched", "/zsl_driver_node/estop_latched"),
+            ("~/read_only", "/zsl_driver_node/read_only"),
+        ],
     )
 
     return LaunchDescription([
