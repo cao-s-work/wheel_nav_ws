@@ -72,7 +72,7 @@ def generate_launch_description():
         }],
     )
 
-    # 5. cmd_vel_mux (合并 teleop + nav → safe)
+    # 5. cmd_vel_mux (合并 teleop + nav → selected)
     cmd_vel_mux_node = Node(
         package="zsl_driver",
         executable="cmd_vel_mux",
@@ -81,6 +81,21 @@ def generate_launch_description():
         parameters=[{
             "nav_timeout_s": 0.5,
             "teleop_timeout_s": 0.5,
+        }],
+    )
+
+    # 6. safety_node (限速/加速度/watchdog/estop → safe)
+    safety_node = Node(
+        package="zsl_driver",
+        executable="safety_node",
+        name="safety_node",
+        output="screen",
+        parameters=[{
+            "max_linear_vel": 0.5,
+            "max_angular_vel": 1.0,
+            "max_linear_accel": 2.0,
+            "max_angular_accel": 3.0,
+            "watchdog_timeout_s": 0.5,
         }],
     )
 
@@ -93,4 +108,5 @@ def generate_launch_description():
         pcl_node,
         zsl_driver_node,
         cmd_vel_mux_node,
+        safety_node,
     ])

@@ -2,7 +2,7 @@
 cmd_vel_mux.py — 多路 cmd_vel 合并 + watchdog。
 
 订阅:
-  /cmd_vel_nav     (Nav2)
+  /cmd_vel          (Nav2 velocity_smoother 平滑后)
   /cmd_vel_teleop   (Web 遥控)
 
 优先级: Nav2 > teleop
@@ -10,7 +10,7 @@ cmd_vel_mux.py — 多路 cmd_vel 合并 + watchdog。
   - 否则 → 转发 teleop（teleop watchdog 500ms 超时则零速）
 
 发布:
-  /cmd_vel_safe → zsl_driver
+  /cmd_vel_selected → safety_node
 
 注意:
   - 所有时钟使用 time.monotonic()，避免系统校时跳变
@@ -37,14 +37,14 @@ class CmdVelMux(Node):
 
         # 订阅
         self._nav_sub = self.create_subscription(
-            Twist, "cmd_vel_nav", self._nav_cb, 10
+            Twist, "cmd_vel", self._nav_cb, 10
         )
         self._teleop_sub = self.create_subscription(
             Twist, "cmd_vel_teleop", self._teleop_cb, 10
         )
 
         # 发布
-        self._safe_pub = self.create_publisher(Twist, "cmd_vel_safe", 10)
+        self._sel_pub = self.create_publisher(Twist, "cmd_vel_selected", 10)
 
         # 定时器 50Hz
         self._timer = self.create_timer(0.02, self._tick)
@@ -68,12 +68,11 @@ class CmdVelMux(Node):
         teleop_alive = (now - self._last_teleop_time) < self._teleop_timeout_s
 
         if nav_alive:
-            self._safe_pub.publish(self._last_nav_cmd)
+            self._sel_pub.publish(self._last_nav_cmd)
         elif teleop_alive:
-            self._safe_pub.publish(self._last_teleop_cmd)
+            self._sel_pub.publish(self._last_teleop_cmd)
         else:
-            # 两路都超时 → 零速
-            self._safe_pub.publish(Twist())
+            self._sel_pub.publish(Twist())
 
 
 def main(args=None):
