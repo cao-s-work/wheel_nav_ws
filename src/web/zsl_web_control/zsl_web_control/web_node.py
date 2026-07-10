@@ -1,124 +1,122 @@
-"""
-web_node.py — ZSL-1W Web 控制网关主节点。
+"""Commercial ZSL-1W ROS 2 Web gateway.
 
-架构:
-  Browser UI → WebSocket (实时) + REST (按钮)
-  → zsl_web_control_node (本节点)
-  → ros_api / nav2_client / safety_gate
-  → ROS 2 topics/services/actions
-
-安全:
-  - deadman: 300ms 无心跳 → 零速
-  - WebSocket 断开 → 零速
-  - read_only 闸门
-  - 所有速度经过 safety_gate.filter()
+The browser never receives a generic ROS shell. Every operation is mapped to a
+fixed ROS topic, service, action, or an allow-listed command configured as a ROS
+parameter.
 """
-import os
+from __future__ import annotations
+
+import asyncio
 import json
+import os
 import threading
 import time
 import uuid
-import asyncio
+from pathlib import Path
+from typing import Any
 
 import rclpy
-from rclpy.node import Node
-from rclpy.executors import MultiThreadedExecutor
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Bool, UInt32, Float32
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool
 
-# Web 框架
 try:
-    from aiohttp import web
-    HAS_AIOHTTP = True
-except ImportError:
-    HAS_AIOHTTP = False
+    from aiohttp import WSMsgType, web
+except ImportError:  # pragma: no cover - deployment dependency
+    web = None
+    WSMsgType = None
 
-from zsl_web_control.ros_api import RosApi
-from zsl_web_control.nav2_client import Nav2Client
-from zsl_web_control.mapping_manager import MappingManager
-from zsl_web_control.safety_gate import SafetyGate
+from .mapping_manager import MappingManager
+from .nav2_client import Nav2Client
+from .process_manager import ProcessManager
+from .ros_api import RosApi
+from .safety_gate import SafetyGate
+from .utils import EventJournal
 
-# =============================================================================
-# WebSocket 管理
-# =============================================================================
 
-class WebSocketManager:
-    """管理所有活跃 WebSocket 连接，广播状态。"""
-
+class WebSocketHub:
     def __init__(self):
+        self._sockets: dict[str, Any] = {}
         self._lock = threading.Lock()
-        self._sockets: set = set()
 
-    def add(self, ws):
+    def add(self, client_id: str, socket: Any) -> None:
         with self._lock:
-            self._sockets.add(ws)
+            self._sockets[client_id] = socket
 
-    def remove(self, ws):
+    def remove(self, client_id: str) -> None:
         with self._lock:
-            self._sockets.discard(ws)
+            self._sockets.pop(client_id, None)
 
-    @property
     def count(self) -> int:
         with self._lock:
             return len(self._sockets)
 
-    async def broadcast(self, data: dict):
-        msg = json.dumps(data)
-        dead = set()
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        message = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         with self._lock:
-            sockets = list(self._sockets)
-        for ws in sockets:
+            sockets = list(self._sockets.items())
+        dead: list[str] = []
+        for client_id, socket in sockets:
             try:
-                await ws.send_str(msg)
+                await socket.send_str(message)
             except Exception:
-                dead.add(ws)
-        with self._lock:
-            self._sockets -= dead
+                dead.append(client_id)
+        for client_id in dead:
+            self.remove(client_id)
 
-# =============================================================================
-# 主节点
-# =============================================================================
 
 class WebControlNode(Node):
     def __init__(self):
         super().__init__("zsl_web_control_node")
+        self._declare_parameters()
 
-        # 参数
-        self.declare_parameter("port", 8080)
-        self.declare_parameter("host", "127.0.0.1")
-        self.declare_parameter("static_dir", "")
-        port = self.get_parameter("port").value
-        host = self.get_parameter("host").value
-        static_dir = self.get_parameter("static_dir").value or os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "..", "static"
+        self._journal = EventJournal(max_items=240)
+        self._hub = WebSocketHub()
+        self._state_lock = threading.RLock()
+        self._teleop_lock = threading.Lock()
+
+        log_root = str(self.get_parameter("managed_log_root").value)
+        self._processes = ProcessManager(self._journal, log_root)
+        self._ros_api = RosApi(self, self._journal)
+        self._nav2 = Nav2Client(self, self._journal)
+        self._mapping = MappingManager(self, self._journal, self._processes, self._nav2)
+        self._safety = SafetyGate(
+            deadman_timeout_s=float(self.get_parameter("teleop_deadman_s").value),
+            max_vx=float(self.get_parameter("web_max_vx").value),
+            max_reverse=float(self.get_parameter("web_max_reverse").value),
+            max_vy=float(self.get_parameter("web_max_vy").value),
+            max_wz=float(self.get_parameter("web_max_wz").value),
         )
-        static_dir = os.path.abspath(static_dir)
 
-        # 子模块
-        self._ros_api = RosApi(self)
-        self._nav2_client = Nav2Client(self)
-        self._mapping = MappingManager(self)
-        self._safety = SafetyGate()
+        self._manual_mode = False
+        self._controller_id: str | None = None
+        self._controller_expire = 0.0
+        self._controller_lease_s = float(self.get_parameter("controller_lease_s").value)
+        self._teleop = [0.0, 0.0, 0.0]
 
-        # WebSocket 管理
-        self._ws_mgr = WebSocketManager()
-
-        # cmd_vel publisher (到 cmd_vel_mux)
-        self._cmd_pub = self.create_publisher(Twist, "cmd_vel_teleop", 10)
-
-        # teleop_active 发布 (transient-local QoS，mux 后启动也能收到)
-        self._teleop_active = False
+        self._cmd_pub = self.create_publisher(Twist, str(self.get_parameter("teleop_topic").value), 10)
+        active_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self._teleop_active_pub = self.create_publisher(
-            Bool, "/web/teleop_active",
-            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
-                       durability=DurabilityPolicy.TRANSIENT_LOCAL),
+            Bool,
+            str(self.get_parameter("teleop_active_topic").value),
+            active_qos,
         )
+        self._publish_control_mode()
 
-        # 状态发布定时器 10Hz
-        self._state_timer = self.create_timer(0.1, self._publish_state)
+        publish_rate = max(10.0, float(self.get_parameter("teleop_publish_rate").value))
+        self.create_timer(1.0 / publish_rate, self._publish_teleop)
+        self.create_timer(0.1, self._watch_control_lease)
+        self.create_timer(0.5, self._broadcast_state_from_ros)
 
         # 订阅驱动真实状态（驱动是真值源）
+        self._estop_latched = False
         self.create_subscription(
             Bool, "/zsl_driver_node/read_only", self._on_driver_read_only, 10
         )
@@ -126,298 +124,519 @@ class WebControlNode(Node):
             Bool, "/zsl_driver_node/estop_latched", self._on_driver_estop, 10
         )
 
-        # 死区心跳定时器
-        self._heartbeat_timer = self.create_timer(0.05, self._check_deadman)
-
-        # 当前 teleop 指令
-        self._teleop_vx = 0.0
-        self._teleop_vy = 0.0
-        self._teleop_wz = 0.0
-        self._teleop_lock = threading.Lock()
-
-        # 单控制者 lease
-        self._controller_id: str | None = None
-        self._controller_expire_time = 0.0
-        LEASE_TIMEOUT = 5.0
-        self._lease_timeout_s = LEASE_TIMEOUT
-
-        # Web 服务器线程
-        self._web_thread = None
-        self._app = None
+        self._web_loop: asyncio.AbstractEventLoop | None = None
+        self._web_thread: threading.Thread | None = None
         self._runner = None
+        self._start_web_server()
+        self._journal.add("Commercial web gateway started", "success", "system")
 
-        self.get_logger().info(f"WebControlNode starting on {host}:{port}")
+    def _declare_parameters(self) -> None:
+        defaults = {
+            "host": "127.0.0.1",
+            "port": 8080,
+            "static_dir": "",
+            "api_token": "",
+            "driver_ns": "zsl_driver_node",
+            "teleop_topic": "/cmd_vel_teleop",
+            "teleop_active_topic": "/web/teleop_active",
+            "initialpose_topic": "/initialpose",
+            "amcl_pose_topic": "/amcl_pose",
+            "odom_topic": "/Odometry",
+            "map_topic": "/map",
+            "lidar_topic": "/livox/lidar",
+            "scan_topic": "/scan",
+            "global_localization_service": "/reinitialize_global_localization",
+            "nomotion_update_service": "/request_nomotion_update",
+            "map_save_service": "/map_saver/save_map",
+            "map_load_service": "/map_server/load_map",
+            "map_root": "~/gb_maps",
+            "map_image_format": "png",
+            "map_save_cli_fallback": True,
+            "mapping_command": "ros2 launch zsl_bringup mapping.launch.py",
+            "navigation_command": "ros2 launch zsl_bringup managed_navigation.launch.py map_file:={map}",
+            "managed_log_root": "~/.ros/zsl_web_control/logs",
+            "controller_lease_s": 5.0,
+            "teleop_deadman_s": 0.35,
+            "teleop_publish_rate": 20.0,
+            "web_max_vx": 0.30,
+            "web_max_reverse": 0.15,
+            "web_max_vy": 0.0,
+            "web_max_wz": 0.50,
+            "stop_managed_processes_on_exit": True,
+        }
+        for name, value in defaults.items():
+            self.declare_parameter(name, value)
 
-        if not HAS_AIOHTTP:
-            self.get_logger().warn("aiohttp not installed. Web server disabled. "
-                                   "Install: /usr/bin/pip3.10 install aiohttp")
+    def _static_root(self) -> Path:
+        configured = str(self.get_parameter("static_dir").value).strip()
+        if configured:
+            return Path(os.path.expanduser(configured)).resolve()
+        return Path(get_package_share_directory("zsl_web_control")) / "static"
+
+    def _start_web_server(self) -> None:
+        if web is None:
+            self.get_logger().error("python3-aiohttp is not installed; web server disabled")
             return
-
-        # 启动 aiohttp 在独立线程
+        host = str(self.get_parameter("host").value)
+        port = int(self.get_parameter("port").value)
+        token = str(self.get_parameter("api_token").value)
+        if host not in {"127.0.0.1", "localhost", "::1"} and not token:
+            self.get_logger().warning("Web server is exposed beyond localhost without api_token")
         self._web_thread = threading.Thread(
-            target=self._run_web, args=(host, port, static_dir), daemon=True)
+            target=self._run_web,
+            args=(host, port),
+            daemon=True,
+            name="zsl-web-server",
+        )
         self._web_thread.start()
 
-    # =========================================================================
-    # Web 服务器 (aiohttp)
-    # =========================================================================
-
-    def _run_web(self, host, port, static_dir):
+    def _run_web(self, host: str, port: int) -> None:
         loop = asyncio.new_event_loop()
+        self._web_loop = loop
         asyncio.set_event_loop(loop)
+        token = str(self.get_parameter("api_token").value)
 
-        app = web.Application()
-        app["node"] = self
+        @web.middleware
+        async def auth_middleware(request, handler):
+            if not token or request.path in {"/", "/healthz", "/style.css", "/app.js"}:
+                return await handler(request)
+            supplied = request.headers.get("Authorization", "")
+            bearer = supplied[7:] if supplied.startswith("Bearer ") else ""
+            query_token = request.query.get("token", "")
+            if bearer != token and query_token != token:
+                if request.path == "/ws":
+                    return web.Response(status=401, text="unauthorized")
+                return web.json_response({"success": False, "message": "unauthorized"}, status=401)
+            return await handler(request)
 
-        # WebSocket
-        app.router.add_get("/ws", self._ws_handler)
+        app = web.Application(middlewares=[auth_middleware], client_max_size=1024 * 1024)
+        self._register_routes(app)
+        static_root = self._static_root()
+        app.router.add_get("/", lambda _: web.FileResponse(static_root / "index.html"))
+        app.router.add_get("/style.css", lambda _: web.FileResponse(static_root / "style.css"))
+        app.router.add_get("/app.js", lambda _: web.FileResponse(static_root / "app.js"))
 
-        # REST API
-        app.router.add_post("/api/stand", self._api_stand)
-        app.router.add_post("/api/lie", self._api_lie)
-        app.router.add_post("/api/crawl", self._api_crawl)
-        app.router.add_post("/api/estop", self._api_estop)
-        app.router.add_post("/api/reset_estop", self._api_reset_estop)
-        app.router.add_post("/api/read_only", self._api_read_only)
-        app.router.add_post("/api/manual", self._api_manual)
-        app.router.add_post("/api/auto", self._api_auto)
-        app.router.add_post("/api/heartbeat", self._api_heartbeat)
-        app.router.add_post("/api/teleop", self._api_teleop)
-        app.router.add_get("/api/state", self._api_state)
-        app.router.add_post("/api/nav/goal", self._api_nav_goal)
-        app.router.add_post("/api/nav/cancel", self._api_nav_cancel)
-        app.router.add_post("/api/nav/clear_costmaps", self._api_nav_clear)
-        app.router.add_get("/api/mapping/status", self._api_mapping_status)
-
-        # 静态文件
-        if os.path.isdir(static_dir):
-            app.router.add_static("/", static_dir, show_index=True)
-
-        # 用 AppRunner + TCPSite 代替 web.run_app（避免主线程信号限制）
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, access_log=None)
+        self._runner = runner
         loop.run_until_complete(runner.setup())
         site = web.TCPSite(runner, host, port)
         loop.run_until_complete(site.start())
-        self.get_logger().info(f"Web server started on http://{host}:{port}")
+        self.get_logger().info(f"Web console listening on http://{host}:{port}")
         loop.run_forever()
 
-    # ---- WebSocket ----
+    def _register_routes(self, app) -> None:
+        app.router.add_get("/healthz", self._api_health)
+        app.router.add_get("/ws", self._ws_handler)
+        app.router.add_get("/api/v1/state", self._api_state)
+        app.router.add_get("/api/v1/diagnostics", self._api_diagnostics)
+        app.router.add_get("/api/v1/events", self._api_events)
 
-    def _set_teleop_active(self, active: bool):
-        """切换人工接管模式。上升沿取消 Nav2，下降沿清零 + 释放 lease。"""
-        changed = active != self._teleop_active
-        self._teleop_active = active
+        app.router.add_post("/api/v1/robot/stand", self._api_stand)
+        app.router.add_post("/api/v1/robot/lie", self._api_lie)
+        app.router.add_post("/api/v1/robot/crawl", self._api_crawl)
+        app.router.add_post("/api/v1/robot/estop", self._api_estop)
+        app.router.add_post("/api/v1/robot/reset_estop", self._api_reset_estop)
+        app.router.add_post("/api/v1/robot/read_only", self._api_read_only)
+        app.router.add_post("/api/v1/control/mode", self._api_control_mode)
+
+        app.router.add_get("/api/v1/maps", self._api_maps)
+        app.router.add_post("/api/v1/maps/save", self._api_map_save)
+        app.router.add_post("/api/v1/maps/load", self._api_map_load)
+        app.router.add_delete("/api/v1/maps/{name}", self._api_map_delete)
+        app.router.add_get("/api/v1/maps/{name}/preview", self._api_map_preview)
+
+        app.router.add_get("/api/v1/mapping/status", self._api_mapping_status)
+        app.router.add_post("/api/v1/mapping/start", self._api_mapping_start)
+        app.router.add_post("/api/v1/mapping/stop", self._api_mapping_stop)
+
+        app.router.add_get("/api/v1/navigation/status", self._api_nav_status)
+        app.router.add_post("/api/v1/navigation/start", self._api_nav_start)
+        app.router.add_post("/api/v1/navigation/stop", self._api_nav_stop)
+        app.router.add_post("/api/v1/navigation/goal", self._api_nav_goal)
+        app.router.add_post("/api/v1/navigation/waypoints", self._api_nav_waypoints)
+        app.router.add_post("/api/v1/navigation/cancel", self._api_nav_cancel)
+        app.router.add_post("/api/v1/navigation/clear_costmaps", self._api_nav_clear)
+        app.router.add_post("/api/v1/localization/initial_pose", self._api_initial_pose)
+        app.router.add_post("/api/v1/localization/global", self._api_global_localization)
+        app.router.add_post("/api/v1/localization/nomotion_update", self._api_nomotion_update)
+
+    def _publish_control_mode(self) -> None:
+        self._teleop_active_pub.publish(Bool(data=self._manual_mode))
+
+    def _set_manual_mode(self, active: bool, controller_id: str | None = None, cancel_nav: bool = True) -> None:
+        changed = active != self._manual_mode
+        self._manual_mode = bool(active)
+        if active and controller_id:
+            self._controller_id = controller_id
+            self._controller_expire = time.monotonic() + self._controller_lease_s
         if not active:
-            with self._teleop_lock:
-                self._teleop_vx = 0.0
-                self._teleop_vy = 0.0
-                self._teleop_wz = 0.0
-            self._cmd_pub.publish(Twist())
-            self._release_lease()
-        self._teleop_active_pub.publish(Bool(data=active))
-        if changed and active:
-            self._nav2_client.cancel_goal()
+            self._controller_id = None
+            self._controller_expire = 0.0
+        with self._teleop_lock:
+            self._teleop = [0.0, 0.0, 0.0]
+        self._cmd_pub.publish(Twist())
+        self._publish_control_mode()
+        if changed:
+            self._journal.add(
+                "Manual control hold enabled" if active else "Automatic navigation mode enabled",
+                "warning" if active else "success",
+                "control",
+            )
+        if active and cancel_nav:
+            self._nav2.cancel_goal()
 
-    def _release_lease(self):
-        """释放控制权 lease。"""
-        self._controller_id = None
-        self._controller_expire_time = 0.0
+    def _claim_control(self, client_id: str) -> tuple[bool, str]:
+        now = time.monotonic()
+        with self._state_lock:
+            if self._controller_id and self._controller_id != client_id and now <= self._controller_expire:
+                return False, "another operator currently owns manual control"
+            self._set_manual_mode(True, controller_id=client_id, cancel_nav=True)
+        return True, "manual control acquired"
+
+    def _release_control(self, client_id: str | None, switch_auto: bool) -> tuple[bool, str]:
+        with self._state_lock:
+            if self._controller_id and client_id and self._controller_id != client_id:
+                return False, "manual control is owned by another operator"
+            if switch_auto:
+                self._set_manual_mode(False, cancel_nav=False)
+            else:
+                self._controller_id = None
+                self._controller_expire = 0.0
+                with self._teleop_lock:
+                    self._teleop = [0.0, 0.0, 0.0]
+                self._cmd_pub.publish(Twist())
+        return True, "automatic mode enabled" if switch_auto else "manual control released; robot remains held"
 
     async def _ws_handler(self, request):
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
-        self._ws_mgr.add(ws)
-        client_id = str(uuid.uuid4())
-        ws.client_id = client_id
+        socket = web.WebSocketResponse(heartbeat=15.0, receive_timeout=40.0)
+        await socket.prepare(request)
+        client_id = uuid.uuid4().hex
+        self._hub.add(client_id, socket)
+        await socket.send_json({"type": "hello", "client_id": client_id, "state": self._state_snapshot()})
         try:
-            async for msg in ws:
-                if msg.type == web.WSMsgType.TEXT:
+            async for message in socket:
+                if message.type == WSMsgType.TEXT:
                     try:
-                        data = json.loads(msg.data)
-                        await self._handle_ws_msg(ws, data, client_id)
-                    except Exception:
-                        pass
-                elif msg.type == web.WSMsgType.ERROR:
+                        payload = json.loads(message.data)
+                        await self._handle_ws_message(socket, client_id, payload)
+                    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                        await socket.send_json({"type": "error", "message": f"invalid message: {exc}"})
+                elif message.type in {WSMsgType.CLOSE, WSMsgType.ERROR}:
                     break
         finally:
-            self._ws_mgr.remove(ws)
-            # 该连接断开 → 如果是 controller 则释放 lease
-            if self._controller_id == client_id:
-                self._release_lease()
-            # 清零全局 teleop
-            with self._teleop_lock:
-                self._teleop_vx = 0.0
-                self._teleop_vy = 0.0
-                self._teleop_wz = 0.0
-            self._cmd_pub.publish(Twist())
-            # 不调用 _set_teleop_active(False)
-        return ws
+            self._hub.remove(client_id)
+            with self._state_lock:
+                if self._controller_id == client_id:
+                    self._release_control(client_id, switch_auto=False)
+                    self._journal.add("Operator disconnected; robot held in manual mode", "warning", "control")
+        return socket
 
-    async def _handle_ws_msg(self, ws, data, client_id: str):
-        msg_type = data.get("type", "")
-        if msg_type == "heartbeat":
-            self._safety.heartbeat()
+    async def _handle_ws_message(self, socket, client_id: str, payload: dict[str, Any]) -> None:
+        message_type = str(payload.get("type", ""))
+        if message_type == "heartbeat":
+            await socket.send_json({"type": "heartbeat_ack", "timestamp": time.time()})
             return
-        if msg_type == "control_mode":
-            mode = data.get("mode", "")
+        if message_type == "control_mode":
+            mode = str(payload.get("mode", ""))
             if mode == "manual":
-                # 手动接管：获取控制权 lease
-                self._controller_id = client_id
-                self._controller_expire_time = time.monotonic() + self._lease_timeout_s
-                self._set_teleop_active(True)
+                success, message = self._claim_control(client_id)
             elif mode == "auto":
-                self._set_teleop_active(False)
+                success, message = self._release_control(client_id, switch_auto=True)
+            else:
+                success, message = False, "mode must be manual or auto"
+            await socket.send_json({"type": "control_mode_result", "success": success, "message": message})
             return
-        if msg_type == "teleop":
-            if not self._teleop_active:
+        if message_type == "teleop":
+            with self._state_lock:
+                allowed = self._manual_mode and self._controller_id == client_id
+                if allowed:
+                    self._controller_expire = time.monotonic() + self._controller_lease_s
+            if not allowed:
+                await socket.send_json({"type": "error", "message": "manual control lease is not held"})
                 return
-            if client_id != self._controller_id:
-                await ws.send_json({
-                    "type": "error",
-                    "message": "control lease not held",
-                })
-                return
-            # 刷新 lease 超时
-            self._controller_expire_time = time.monotonic() + self._lease_timeout_s
-            vx = float(data.get("vx", 0))
-            vy = float(data.get("vy", 0))
-            wz = float(data.get("wz", 0))
+            values = [float(payload.get("vx", 0.0)), float(payload.get("vy", 0.0)), float(payload.get("wz", 0.0))]
             with self._teleop_lock:
-                self._teleop_vx = vx
-                self._teleop_vy = vy
-                self._teleop_wz = wz
+                self._teleop = values
             self._safety.teleop_heartbeat()
+            return
+        await socket.send_json({"type": "error", "message": f"unsupported message type: {message_type}"})
 
-    # ---- REST API ----
+    def _publish_teleop(self) -> None:
+        self._safety.read_only = self._ros_api.read_only or self._ros_api.estop_latched
+        with self._teleop_lock:
+            vx, vy, wz = self._teleop
+        if self._manual_mode:
+            vx, vy, wz = self._safety.filter(vx, vy, wz)
+        else:
+            vx = vy = wz = 0.0
+        command = Twist()
+        command.linear.x = vx
+        command.linear.y = vy
+        command.angular.z = wz
+        self._cmd_pub.publish(command)
 
-    async def _api_stand(self, request):
-        return web.json_response(self._ros_api.stand_up())
+    def _watch_control_lease(self) -> None:
+        now = time.monotonic()
+        with self._state_lock:
+            expired = bool(self._controller_id and now > self._controller_expire)
+            if expired:
+                self._controller_id = None
+                self._controller_expire = 0.0
+        if expired:
+            with self._teleop_lock:
+                self._teleop = [0.0, 0.0, 0.0]
+            self._cmd_pub.publish(Twist())
+            # Fail-safe: keep manual mode active so Nav2 cannot resume unexpectedly.
+            self._journal.add("Manual control lease expired; robot remains held", "warning", "control")
 
-    async def _api_lie(self, request):
-        return web.json_response(self._ros_api.lie_down())
+    def _state_snapshot(self) -> dict[str, Any]:
+        robot = self._ros_api.summary()
+        mapping = self._mapping.status()
+        navigation = self._nav2.status()
+        with self._state_lock:
+            controller_present = self._controller_id is not None
+            lease_remaining = max(0.0, self._controller_expire - time.monotonic()) if controller_present else 0.0
+            control = {
+                "mode": "manual" if self._manual_mode else "auto",
+                "manual_hold": self._manual_mode,
+                "controller_present": controller_present,
+                "controller_lease_remaining_s": round(lease_remaining, 2),
+                "websocket_clients": self._hub.count(),
+                "teleop_alive": self._safety.teleop_alive,
+            }
+        return {
+            "timestamp": time.time(),
+            "robot": robot,
+            "control": control,
+            "mapping": mapping,
+            "navigation": navigation,
+            "maps": {
+                "active": mapping.get("active_map"),
+                "count": mapping.get("map_count", 0),
+                "root": mapping.get("map_root"),
+            },
+            "events": self._journal.list(30),
+        }
 
-    async def _api_crawl(self, request):
-        return web.json_response(self._ros_api.crawl())
+    def _broadcast_state_from_ros(self) -> None:
+        if self._web_loop is None or not self._web_loop.is_running() or self._hub.count() == 0:
+            return
+        payload = {"type": "state", "data": self._state_snapshot()}
+        asyncio.run_coroutine_threadsafe(self._hub.broadcast(payload), self._web_loop)
 
-    async def _api_estop(self, request):
-        return web.json_response(self._ros_api.emergency_stop())
+    async def _json_body(self, request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+            return body if isinstance(body, dict) else {}
+        except Exception:
+            return {}
 
-    async def _api_reset_estop(self, request):
-        return web.json_response(self._ros_api.reset_estop())
+    @staticmethod
+    def _response(result: dict[str, Any], status: int | None = None):
+        code = status if status is not None else (200 if result.get("success", False) else 400)
+        return web.json_response(result, status=code)
+
+    async def _run(self, function, *args):
+        return await asyncio.to_thread(function, *args)
+
+    async def _api_health(self, _):
+        return web.json_response({"success": True, "message": "ok", "timestamp": time.time()})
+
+    async def _api_state(self, _):
+        return web.json_response({"success": True, "data": self._state_snapshot()})
+
+    async def _api_events(self, request):
+        limit = int(request.query.get("limit", "80"))
+        return web.json_response({"success": True, "data": self._journal.list(limit)})
+
+    async def _api_diagnostics(self, _):
+        try:
+            nodes = sorted(self.get_node_names())
+            services = sorted(name for name, _ in self.get_service_names_and_types())
+            topics = sorted(name for name, _ in self.get_topic_names_and_types())
+        except Exception:
+            nodes, services, topics = [], [], []
+        return web.json_response(
+            {
+                "success": True,
+                "data": {
+                    "nodes": nodes,
+                    "services": services,
+                    "topics": topics,
+                    "processes": self._processes.status(),
+                    "driver_diagnostics": self._ros_api.summary().get("diagnostics", []),
+                },
+            }
+        )
+
+    async def _api_stand(self, _):
+        return self._response(await self._run(self._ros_api.stand_up))
+
+    async def _api_lie(self, _):
+        return self._response(await self._run(self._ros_api.lie_down))
+
+    async def _api_crawl(self, _):
+        return self._response(await self._run(self._ros_api.crawl))
+
+    async def _api_estop(self, _):
+        self._set_manual_mode(True, cancel_nav=True)
+        return self._response(await self._run(self._ros_api.emergency_stop))
+
+    async def _api_reset_estop(self, _):
+        return self._response(await self._run(self._ros_api.reset_estop))
 
     async def _api_read_only(self, request):
-        body = await request.json()
-        requested = bool(body.get("read_only", True))
-        return web.json_response(self._ros_api.set_read_only(requested))
+        body = await self._json_body(request)
+        read_only = bool(body.get("read_only", True))
+        return self._response(await self._run(self._ros_api.set_read_only, read_only))
 
-    async def _api_manual(self, request):
-        self._set_teleop_active(True)
-        return web.json_response({"ok": True, "mode": "manual"})
+    async def _api_control_mode(self, request):
+        body = await self._json_body(request)
+        mode = str(body.get("mode", "manual"))
+        if mode == "manual":
+            self._set_manual_mode(True, cancel_nav=True)
+            return self._response({"success": True, "message": "manual hold enabled"})
+        if mode == "auto":
+            self._set_manual_mode(False, cancel_nav=False)
+            return self._response({"success": True, "message": "automatic mode enabled"})
+        return self._response({"success": False, "message": "mode must be manual or auto"})
 
-    async def _api_auto(self, request):
-        self._set_teleop_active(False)
-        return web.json_response({"ok": True, "mode": "auto"})
+    async def _api_maps(self, _):
+        maps = await self._run(self._mapping.list_maps)
+        return web.json_response({"success": True, "data": maps})
 
-    async def _api_heartbeat(self, request):
-        self._safety.heartbeat()
-        return web.json_response({"ok": True})
+    async def _api_map_save(self, request):
+        body = await self._json_body(request)
+        return self._response(await self._run(self._mapping.save_map, str(body.get("name", ""))))
 
-    async def _api_teleop(self, request):
-        body = await request.json()
-        vx = float(body.get("vx", 0))
-        vy = float(body.get("vy", 0))
-        wz = float(body.get("wz", 0))
-        with self._teleop_lock:
-            self._teleop_vx = vx
-            self._teleop_vy = vy
-            self._teleop_wz = wz
-        self._safety.teleop_heartbeat()
-        return web.json_response({"ok": True})
+    async def _api_map_load(self, request):
+        body = await self._json_body(request)
+        name = str(body.get("name", ""))
+        self._set_manual_mode(True, cancel_nav=True)
+        result = await self._run(self._mapping.load_map, name)
+        if result.get("success"):
+            await self._run(self._nav2.clear_costmaps)
+        return self._response(result)
 
-    async def _api_state(self, request):
-        return web.json_response(self._ros_api.summary())
+    async def _api_map_delete(self, request):
+        return self._response(await self._run(self._mapping.delete_map, request.match_info["name"]))
+
+    async def _api_map_preview(self, request):
+        path = await self._run(self._mapping.preview_path, request.match_info["name"])
+        if path is None:
+            return web.Response(status=404, text="preview unavailable")
+        return web.FileResponse(path)
+
+    async def _api_mapping_status(self, _):
+        return web.json_response({"success": True, "data": self._mapping.status()})
+
+    async def _api_mapping_start(self, _):
+        self._set_manual_mode(True, cancel_nav=True)
+        return self._response(await self._run(self._mapping.start_mapping))
+
+    async def _api_mapping_stop(self, _):
+        return self._response(await self._run(self._mapping.stop_mapping))
+
+    async def _api_nav_status(self, _):
+        return web.json_response({"success": True, "data": self._nav2.status()})
+
+    async def _api_nav_start(self, request):
+        body = await self._json_body(request)
+        result = await self._run(self._mapping.start_navigation, str(body.get("map", "")))
+        if result.get("success"):
+            self._set_manual_mode(False, cancel_nav=False)
+        return self._response(result)
+
+    async def _api_nav_stop(self, _):
+        self._set_manual_mode(True, cancel_nav=True)
+        return self._response(await self._run(self._mapping.stop_navigation))
 
     async def _api_nav_goal(self, request):
-        body = await request.json()
-        x = float(body.get("x", 0))
-        y = float(body.get("y", 0))
-        yaw = float(body.get("yaw", 0))
-        ok = self._nav2_client.send_goal(x, y, yaw)
-        return web.json_response({"ok": ok})
+        body = await self._json_body(request)
+        self._set_manual_mode(False, cancel_nav=False)
+        result = await self._run(
+            self._nav2.send_goal,
+            float(body.get("x", 0.0)),
+            float(body.get("y", 0.0)),
+            float(body.get("yaw_deg", body.get("yaw", 0.0))),
+            str(body.get("frame_id", "map")),
+            str(body.get("behavior_tree", "")),
+        )
+        return self._response(result)
 
-    async def _api_nav_cancel(self, request):
-        ok = self._nav2_client.cancel_goal()
-        return web.json_response({"ok": ok})
+    async def _api_nav_waypoints(self, request):
+        body = await self._json_body(request)
+        poses = body.get("poses", [])
+        if not isinstance(poses, list) or len(poses) > 100:
+            return self._response({"success": False, "message": "poses must be a list with at most 100 items"})
+        self._set_manual_mode(False, cancel_nav=False)
+        return self._response(await self._run(self._nav2.send_waypoints, poses, str(body.get("frame_id", "map"))))
 
-    async def _api_nav_clear(self, request):
-        ok = self._nav2_client.clear_costmaps()
-        return web.json_response({"ok": ok})
+    async def _api_nav_cancel(self, _):
+        self._set_manual_mode(True, cancel_nav=False)
+        return self._response(await self._run(self._nav2.cancel_goal))
 
-    async def _api_mapping_status(self, request):
-        return web.json_response(self._mapping.get_status())
+    async def _api_nav_clear(self, _):
+        return self._response(await self._run(self._nav2.clear_costmaps))
 
-    # =========================================================================
-    # 定时器回调
-    # =========================================================================
+    async def _api_initial_pose(self, request):
+        body = await self._json_body(request)
+        self._set_manual_mode(True, cancel_nav=True)
+        result = await self._run(
+            self._ros_api.set_initial_pose,
+            float(body.get("x", 0.0)),
+            float(body.get("y", 0.0)),
+            float(body.get("yaw_deg", body.get("yaw", 0.0))),
+            float(body.get("covariance_xy", 0.25)),
+            float(body.get("covariance_yaw", 0.0685)),
+        )
+        if result.get("success"):
+            await asyncio.sleep(0.15)
+            await self._run(self._nav2.clear_costmaps)
+            await self._run(self._ros_api.nomotion_update)
+        return self._response(result)
 
-    def _publish_state(self):
-        """10Hz 状态广播 + cmd_vel 发布。"""
-        # 安全过滤
-        with self._teleop_lock:
-            vx, vy, wz = self._safety.filter(
-                self._teleop_vx, self._teleop_vy, self._teleop_wz)
-        # 发布 cmd_vel
-        twist = Twist()
-        twist.linear.x = vx
-        twist.linear.y = vy
-        twist.angular.z = wz
-        self._cmd_pub.publish(twist)
+    async def _api_global_localization(self, _):
+        self._set_manual_mode(True, cancel_nav=True)
+        return self._response(await self._run(self._ros_api.global_localization))
 
-    def _check_deadman(self):
-        """20Hz deadman 检查 — 速度心跳超时归零；lease 超时释放控制权。"""
-        now = time.monotonic()
-        # lease 超时 → 释放控制权（5s 无 teleop）
-        if (
-            self._controller_id is not None
-            and now > self._controller_expire_time
-        ):
-            self._release_lease()
-            self._set_teleop_active(False)
-        # 速度心跳超时 → 归零
-        if self._teleop_active and not self._safety.teleop_alive:
-            with self._teleop_lock:
-                self._teleop_vx = 0.0
-                self._teleop_vy = 0.0
-                self._teleop_wz = 0.0
-            self._cmd_pub.publish(Twist())
+    async def _api_nomotion_update(self, _):
+        return self._response(await self._run(self._ros_api.nomotion_update))
+
+    def destroy_node(self):
+        self._cmd_pub.publish(Twist())
+        self._manual_mode = True
+        self._publish_control_mode()
+        if bool(self.get_parameter("stop_managed_processes_on_exit").value):
+            self._processes.stop_all()
+        if self._web_loop and self._web_loop.is_running():
+            self._web_loop.call_soon_threadsafe(self._web_loop.stop)
+        super().destroy_node()
 
     def _on_driver_read_only(self, msg: Bool):
         """驱动是真值源 — Web 只同步不自行认定。"""
         self._safety.read_only = msg.data
 
     def _on_driver_estop(self, msg: Bool):
-        """急停锁存 → 释放控制权 lease。"""
+        """急停锁存 → 释放控制权。"""
         if msg.data:
-            self._release_lease()
-
-    # =========================================================================
-    # 生命周期
-    # =========================================================================
-
-    def destroy_node(self):
-        self._cmd_pub.publish(Twist())  # 零速
-        super().destroy_node()
+            self._controller_id = None
+            self._controller_expire = 0.0
+            self._estop_latched = True
+        else:
+            self._estop_latched = False
 
 
 def main(args=None):
     rclpy.init(args=args)
     node = WebControlNode()
-    executor = MultiThreadedExecutor()
+    executor = MultiThreadedExecutor(num_threads=6)
     executor.add_node(node)
     try:
         executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.remove_node(node)
         node.destroy_node()
         rclpy.shutdown()

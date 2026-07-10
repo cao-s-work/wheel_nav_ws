@@ -1,74 +1,214 @@
-<!DOCTYPE html>
-<html lang="zh">
+<!doctype html>
+<html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ZSL-1W 控制台</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#08121f" />
+  <title>ZSL-1W 智能运维控制台</title>
+  <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-<div id="root">
-  <header>
-    <h1>ZSL-1W 钢镚控制台</h1>
-    <span id="ws-status">离线</span>
-  </header>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">Z</div>
+        <div><b>ZSL-1W</b><span>ROBOT OPS</span></div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-page="dashboard"><span>⌁</span>总览</button>
+        <button class="nav-item" data-page="manual"><span>✣</span>人工控制</button>
+        <button class="nav-item" data-page="mapping"><span>▦</span>建图作业</button>
+        <button class="nav-item" data-page="navigation"><span>➤</span>导航任务</button>
+        <button class="nav-item" data-page="maps"><span>◫</span>地图库</button>
+        <button class="nav-item" data-page="diagnostics"><span>⌘</span>系统诊断</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="mini-status"><i id="side-web-dot"></i><span id="side-web">Web 离线</span></div>
+        <div class="mini-status"><i id="side-sdk-dot"></i><span id="side-sdk">SDK 未连接</span></div>
+        <small>Commercial Console 0.3</small>
+      </div>
+    </aside>
 
-  <!-- Dashboard -->
-  <section id="dashboard">
-    <h2>状态</h2>
-    <div class="grid">
-      <div class="card"><label>SDK</label><span id="sdk-connected">--</span></div>
-      <div class="card"><label>电量</label><span id="battery">--</span></div>
-      <div class="card"><label>模式</label><span id="ctrl-mode">--</span></div>
-      <div class="card"><label>安全锁</label><span id="read-only">--</span></div>
-    </div>
-  </section>
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">GENISOM ROBOTICS · ROS 2</p>
+          <h1 id="page-title">机器人运行总览</h1>
+        </div>
+        <div class="top-actions">
+          <div class="clock" id="clock">--:--:--</div>
+          <button id="top-hold" class="btn ghost">人工保持</button>
+          <button id="top-estop" class="btn estop">紧急停止</button>
+        </div>
+      </header>
 
-  <!-- 运动控制 -->
-  <section id="motion">
-    <h2>运动控制</h2>
-    <div class="btn-row">
-      <button onclick="api('POST','/api/stand')">站立</button>
-      <button onclick="api('POST','/api/lie')">趴下</button>
-      <button onclick="api('POST','/api/crawl')">匍匐</button>
-      <button class="danger" onclick="api('POST','/api/estop')">急停</button>
-    </div>
-    <div class="btn-row">
-      <button onclick="api('POST','/api/read_only',{read_only:true})">上锁</button>
-      <button onclick="api('POST','/api/read_only',{read_only:false})">解锁</button>
-    </div>
+      <section id="page-dashboard" class="page active">
+        <div class="status-grid">
+          <article class="stat-card"><span class="stat-icon cyan">SDK</span><div><small>机器人链路</small><strong id="dash-sdk">未连接</strong><em id="dash-watchdog">指令 --</em></div></article>
+          <article class="stat-card"><span class="stat-icon green">BAT</span><div><small>剩余电量</small><strong id="dash-battery">--%</strong><em id="dash-power-hint">等待数据</em></div></article>
+          <article class="stat-card"><span class="stat-icon violet">NAV</span><div><small>导航系统</small><strong id="dash-nav">未启动</strong><em id="dash-nav-state">无任务</em></div></article>
+          <article class="stat-card"><span class="stat-icon amber">MAP</span><div><small>当前地图</small><strong id="dash-map">未选择</strong><em id="dash-map-count">0 张地图</em></div></article>
+        </div>
 
-    <!-- 虚拟摇杆 -->
-    <h3>虚拟摇杆</h3>
-    <div class="joystick-container">
-      <canvas id="joystick" width="200" height="200"></canvas>
-    </div>
-    <div>
-      <label>速度档位:</label>
-      <select id="speed-level" onchange="setSpeedLevel(this.value)">
-        <option value="slow" selected>慢</option>
-        <option value="normal">中</option>
-        <option value="fast">快</option>
-      </select>
-    </div>
-    <div id="teleop-values">vx: 0.00 vy: 0.00 wz: 0.00</div>
-  </section>
+        <div class="dashboard-grid">
+          <article class="panel hero-panel">
+            <div class="panel-head"><div><p class="kicker">SYSTEM READINESS</p><h2>任务就绪度</h2></div><span id="ready-tag" class="tag neutral">检查中</span></div>
+            <div class="robot-stage">
+              <div class="robot-orbit"></div>
+              <svg viewBox="0 0 420 220" class="robot-svg" aria-label="ZSL-1W 示意图">
+                <defs><linearGradient id="rb" x1="0" x2="1"><stop stop-color="#50e1ff"/><stop offset="1" stop-color="#536fff"/></linearGradient></defs>
+                <path d="M105 78h205l36 35-21 61H102l-28-56z" fill="url(#rb)" opacity=".92"/>
+                <path d="M139 55h123l28 23H113z" fill="#10233a" stroke="#80eaff" stroke-width="3"/>
+                <rect x="181" y="29" width="48" height="26" rx="10" fill="#0a1829" stroke="#75def8" stroke-width="3"/>
+                <circle cx="205" cy="26" r="15" fill="#0c1b30" stroke="#75def8" stroke-width="3"/><circle cx="205" cy="26" r="5" fill="#75def8"/>
+                <path d="m118 166-43 42m87-42-18 45m117-45 17 45m43-49 48 41" stroke="#8aa9d0" stroke-width="13" stroke-linecap="round"/>
+                <path d="m74 208-20 3m90 0-18 2m152-2 18 2m73-10 19 7" stroke="#6fe2ff" stroke-width="9" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="readiness-list">
+              <div><span>驱动连接</span><b id="ready-driver">未连接</b></div>
+              <div><span>运动安全锁</span><b id="ready-lock">已锁定</b></div>
+              <div><span>急停状态</span><b id="ready-estop">正常</b></div>
+              <div><span>定位位姿</span><b id="ready-pose">无数据</b></div>
+            </div>
+          </article>
 
-  <!-- 导航 -->
-  <section id="navigation">
-    <h2>导航</h2>
-    <div class="btn-row">
-      <button onclick="sendNavGoal()">发送 Goal</button>
-      <button onclick="api('POST','/api/nav/cancel')">取消</button>
-      <button onclick="api('POST','/api/nav/clear_costmaps')">清 costmap</button>
-    </div>
-    <div>
-      <label>X: <input id="nav-x" type="number" step="0.1" value="0"></label>
-      <label>Y: <input id="nav-y" type="number" step="0.1" value="0"></label>
-      <label>Yaw°: <input id="nav-yaw" type="number" step="1" value="0"></label>
-    </div>
-  </section>
-</div>
-<script src="app.js"></script>
+          <article class="panel sensor-panel">
+            <div class="panel-head"><div><p class="kicker">SENSOR HEALTH</p><h2>传感器健康</h2></div><button class="icon-btn" data-refresh>↻</button></div>
+            <div class="sensor-list">
+              <div class="sensor-row"><span>3D LiDAR</span><b id="sensor-lidar">0.0 Hz</b><i id="sensor-lidar-dot"></i></div>
+              <div class="sensor-row"><span>Laser Scan</span><b id="sensor-scan">0.0 Hz</b><i id="sensor-scan-dot"></i></div>
+              <div class="sensor-row"><span>里程计</span><b id="sensor-odom">0.0 Hz</b><i id="sensor-odom-dot"></i></div>
+              <div class="sensor-row"><span>地图输出</span><b id="sensor-map">0.0 Hz</b><i id="sensor-map-dot"></i></div>
+            </div>
+            <div class="pose-box">
+              <small>当前位姿 / MAP</small>
+              <div><span>X</span><b id="pose-x">--</b><span>Y</span><b id="pose-y">--</b><span>Yaw</span><b id="pose-yaw">--</b></div>
+            </div>
+          </article>
+
+          <article class="panel quick-panel">
+            <div class="panel-head"><div><p class="kicker">QUICK OPERATIONS</p><h2>快捷作业</h2></div></div>
+            <div class="quick-grid">
+              <button data-go="manual"><span>✣</span><b>人工接管</b><small>进入安全手动模式</small></button>
+              <button data-go="mapping"><span>▦</span><b>开始建图</b><small>启动 SLAM 作业</small></button>
+              <button data-go="navigation"><span>➤</span><b>导航任务</b><small>目标点与重定位</small></button>
+              <button data-go="maps"><span>◫</span><b>切换地图</b><small>管理场景地图</small></button>
+            </div>
+          </article>
+
+          <article class="panel events-panel">
+            <div class="panel-head"><div><p class="kicker">EVENT STREAM</p><h2>运行事件</h2></div><button id="clear-local-log" class="text-btn">清空显示</button></div>
+            <ul id="event-list" class="event-list"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="page-manual" class="page">
+        <div class="page-grid two-col">
+          <article class="panel control-panel">
+            <div class="panel-head"><div><p class="kicker">MANUAL CONTROL</p><h2>人工遥控</h2></div><div class="mode-toggle"><button id="manual-mode">人工接管</button><button id="auto-mode" class="active">自动导航</button></div></div>
+            <div id="manual-banner" class="notice info"><b>当前由 Nav2 控制</b><span>进入人工接管会取消当前导航任务；失联后保持停车，不会自动恢复旧任务。</span></div>
+            <div class="joystick-layout">
+              <div>
+                <div id="joystick" class="joystick" tabindex="0">
+                  <div class="axis horizontal"></div><div class="axis vertical"></div>
+                  <span class="j-label top">前进</span><span class="j-label bottom">后退</span><span class="j-label left">左转</span><span class="j-label right">右转</span>
+                  <div id="joystick-knob" class="joystick-knob"></div>
+                </div>
+                <p class="hint">支持触控与 W / S / A / D，空格键立即归零</p>
+              </div>
+              <div class="telemetry">
+                <label>速度档位<div class="segments"><button data-speed="0.35">低速</button><button data-speed="0.65" class="active">标准</button><button data-speed="1">快速</button></div></label>
+                <div class="cmd-row"><span>VX</span><b id="cmd-vx">0.00</b><i><u id="bar-vx"></u></i></div>
+                <div class="cmd-row"><span>VY</span><b id="cmd-vy">0.00</b><i><u id="bar-vy"></u></i></div>
+                <div class="cmd-row"><span>WZ</span><b id="cmd-wz">0.00</b><i><u id="bar-wz"></u></i></div>
+                <button id="zero-command" class="btn secondary wide">立即归零</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel action-panel">
+            <div class="panel-head"><div><p class="kicker">ROBOT ACTIONS</p><h2>机器人动作与安全</h2></div></div>
+            <div class="action-grid">
+              <button data-action="stand"><span>↑</span><b>站立</b><small>进入站立姿态</small></button>
+              <button data-action="lie"><span>↓</span><b>趴下</b><small>受控收腿</small></button>
+              <button data-action="crawl"><span>↦</span><b>匍匐</b><small>低姿态动作</small></button>
+              <button id="reset-estop"><span>R</span><b>复位急停</b><small>复位后仍保持锁定</small></button>
+            </div>
+            <div class="lock-card">
+              <div><small>运动安全锁</small><strong id="manual-lock-state">已锁定</strong></div>
+              <div class="button-row"><button id="lock-btn" class="btn secondary">立即上锁</button><button id="unlock-btn" class="btn primary hold-btn"><span>按住 1.2 秒解锁</span><i></i></button></div>
+            </div>
+            <button id="manual-estop" class="big-estop"><span>STOP</span><b>紧急停止</b><small>立即零速并锁存 passive</small></button>
+          </article>
+        </div>
+      </section>
+
+      <section id="page-mapping" class="page">
+        <div class="page-grid two-col">
+          <article class="panel">
+            <div class="panel-head"><div><p class="kicker">SLAM WORKFLOW</p><h2>建图作业控制</h2></div><span id="mapping-tag" class="tag neutral">未运行</span></div>
+            <div class="workflow-steps"><div class="done"><i>1</i><span><b>底盘与传感器</b><small>确认 LiDAR、Scan、里程计正常</small></span></div><div><i>2</i><span><b>开始建图</b><small>启动 SLAM Toolbox</small></span></div><div><i>3</i><span><b>遥控覆盖场景</b><small>低速走完整个区域</small></span></div><div><i>4</i><span><b>保存地图</b><small>生成 YAML 与 PNG/PGM</small></span></div></div>
+            <div class="button-row"><button id="mapping-start" class="btn primary">开始建图</button><button id="mapping-stop" class="btn secondary">停止建图</button></div>
+            <div class="form-block">
+              <label>地图名称<input id="map-save-name" maxlength="64" placeholder="例如 warehouse_floor_1" /></label>
+              <button id="map-save" class="btn success">保存当前地图</button>
+            </div>
+            <div class="notice warning"><b>安全提示</b><span>开始建图会进入人工保持并取消当前导航；保存地图前应确认 /map 正常输出。</span></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head"><div><p class="kicker">LIVE MAPPING</p><h2>实时建图状态</h2></div></div>
+            <div class="metric-tiles"><div><small>LiDAR</small><b id="map-lidar-hz">0.0 Hz</b></div><div><small>Scan</small><b id="map-scan-hz">0.0 Hz</b></div><div><small>Odometry</small><b id="map-odom-hz">0.0 Hz</b></div><div><small>Map</small><b id="map-map-hz">0.0 Hz</b></div></div>
+            <div class="map-meta"><div><span>地图尺寸</span><b id="map-size">--</b></div><div><span>分辨率</span><b id="map-resolution">--</b></div><div><span>地图目录</span><b id="map-root">--</b></div><div><span>管理进程</span><b id="mapping-process">未启动</b></div></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="page-navigation" class="page">
+        <div class="page-grid nav-layout">
+          <article class="panel map-select-panel">
+            <div class="panel-head"><div><p class="kicker">NAVIGATION STACK</p><h2>地图与导航栈</h2></div><span id="nav-stack-tag" class="tag neutral">未启动</span></div>
+            <label>选择地图<select id="nav-map-select"><option value="">请选择地图</option></select></label>
+            <div class="map-preview"><img id="nav-map-preview" alt="地图预览" /><div id="nav-map-empty">暂无地图预览</div></div>
+            <div class="button-row wrap"><button id="load-map" class="btn secondary">仅切换地图</button><button id="start-navigation" class="btn primary">启动导航</button><button id="stop-navigation" class="btn danger-soft">停止导航栈</button></div>
+          </article>
+
+          <article class="panel nav-task-panel">
+            <div class="panel-head"><div><p class="kicker">NAVIGATE TO POSE</p><h2>目标点导航</h2></div><span id="nav-task-tag" class="tag neutral">空闲</span></div>
+            <div class="coordinate-form"><label>X / m<input id="goal-x" type="number" step="0.01" value="0" /></label><label>Y / m<input id="goal-y" type="number" step="0.01" value="0" /></label><label>Yaw / °<input id="goal-yaw" type="number" step="1" value="0" /></label></div>
+            <div class="button-row"><button id="send-goal" class="btn success">发送导航目标</button><button id="cancel-goal" class="btn secondary">取消任务</button><button id="clear-costmaps" class="btn secondary">清除代价地图</button></div>
+            <div class="progress-card"><div><span>任务状态</span><b id="nav-message">无导航任务</b></div><div><span>剩余距离</span><b id="nav-distance">-- m</b></div><div><span>预计剩余</span><b id="nav-eta">-- s</b></div><div><span>恢复次数</span><b id="nav-recoveries">0</b></div></div>
+          </article>
+
+          <article class="panel localization-panel">
+            <div class="panel-head"><div><p class="kicker">LOCALIZATION</p><h2>重定位与恢复</h2></div></div>
+            <div class="coordinate-form"><label>X / m<input id="loc-x" type="number" step="0.01" value="0" /></label><label>Y / m<input id="loc-y" type="number" step="0.01" value="0" /></label><label>Yaw / °<input id="loc-yaw" type="number" step="1" value="0" /></label></div>
+            <div class="button-row wrap"><button id="use-current-pose" class="btn ghost">填入当前位姿</button><button id="set-initial-pose" class="btn primary">设置初始位姿</button><button id="global-localization" class="btn secondary">全局重定位</button><button id="nomotion-update" class="btn secondary">静止更新</button></div>
+            <div class="notice info"><b>重定位流程</b><span>系统会先取消导航并保持停车，再发布 /initialpose、清除代价地图并请求 AMCL 静止更新。</span></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="page-maps" class="page">
+        <article class="panel">
+          <div class="panel-head"><div><p class="kicker">MAP LIBRARY</p><h2>场景地图库</h2></div><div class="button-row"><span id="maps-root-label" class="path-label">--</span><button id="refresh-maps" class="btn ghost">刷新</button></div></div>
+          <div id="map-library" class="map-library"></div>
+        </article>
+      </section>
+
+      <section id="page-diagnostics" class="page">
+        <div class="page-grid two-col">
+          <article class="panel"><div class="panel-head"><div><p class="kicker">MANAGED PROCESSES</p><h2>受控进程</h2></div><button id="refresh-diagnostics" class="icon-btn">↻</button></div><div id="process-list" class="diag-list"></div></article>
+          <article class="panel"><div class="panel-head"><div><p class="kicker">DRIVER DIAGNOSTICS</p><h2>驱动诊断</h2></div></div><div id="driver-diagnostics" class="diag-list"></div></article>
+          <article class="panel wide"><div class="panel-head"><div><p class="kicker">ROS GRAPH</p><h2>ROS 节点与接口</h2></div></div><div class="graph-counts"><div><small>节点</small><b id="node-count">0</b></div><div><small>服务</small><b id="service-count">0</b></div><div><small>话题</small><b id="topic-count">0</b></div></div><pre id="ros-nodes" class="code-box">等待数据...</pre></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast-region" class="toast-region"></div>
+  <dialog id="confirm-dialog"><form method="dialog"><h3 id="dialog-title">确认操作</h3><p id="dialog-message"></p><div class="button-row end"><button value="cancel" class="btn secondary">取消</button><button id="dialog-confirm" value="default" class="btn danger">确认</button></div></form></dialog>
+  <script src="/app.js"></script>
 </body>
 </html>

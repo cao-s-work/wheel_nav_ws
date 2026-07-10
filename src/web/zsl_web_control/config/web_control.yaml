@@ -1,16 +1,45 @@
-# ZSL-1W Web Control 配置
-
-web_control:
+zsl_web_control_node:
   ros__parameters:
-    port: 8080
+    # 默认仅本机监听。需要局域网访问时建议配置 api_token 后再改为 0.0.0.0。
     host: "127.0.0.1"
+    port: 8080
+    api_token: ""
+    static_dir: ""
 
-    # 安全
-    deadman_timeout_s: 0.3
-    speed_level: "slow"          # slow / normal / fast
-    lateral_enabled: false       # 横移开关（第一阶段默认关闭）
+    # 机器人驱动接口
+    driver_ns: "zsl_driver_node"
+    teleop_topic: "/cmd_vel_teleop"
+    teleop_active_topic: "/web/teleop_active"
 
-    # 速度限幅
-    vx_max: 1.0
-    vy_max: 1.0
-    wz_max: 1.0
+    # 定位与传感器接口
+    initialpose_topic: "/initialpose"
+    amcl_pose_topic: "/amcl_pose"
+    odom_topic: "/Odometry"
+    map_topic: "/map"
+    lidar_topic: "/livox/lidar"
+    scan_topic: "/scan"
+    global_localization_service: "/reinitialize_global_localization"
+    nomotion_update_service: "/request_nomotion_update"
+
+    # 地图库与 Nav2 地图服务
+    map_root: "~/gb_maps"
+    map_save_service: "/map_saver/save_map"
+    map_load_service: "/map_server/load_map"
+    map_image_format: "png"
+    map_save_cli_fallback: true
+
+    # 只能执行这里预先配置的白名单命令，网页无法传入 shell 命令。
+    # Web 节点建议先随 robot_base 启动，再由网页启动建图或导航子栈。
+    mapping_command: "ros2 launch zsl_bringup mapping.launch.py"
+    navigation_command: "ros2 launch zsl_bringup managed_navigation.launch.py map_file:={map}"
+    managed_log_root: "~/.ros/zsl_web_control/logs"
+    stop_managed_processes_on_exit: true
+
+    # Web 手动控制保护。最终限速仍由 cmd_vel_safety 负责。
+    controller_lease_s: 5.0
+    teleop_deadman_s: 0.35
+    teleop_publish_rate: 20.0
+    web_max_vx: 0.30
+    web_max_reverse: 0.15
+    web_max_vy: 0.0
+    web_max_wz: 0.50
