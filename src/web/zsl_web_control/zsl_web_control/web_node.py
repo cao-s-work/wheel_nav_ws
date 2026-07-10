@@ -177,6 +177,7 @@ class WebControlNode(Node):
         app.router.add_post("/api/lie", self._api_lie)
         app.router.add_post("/api/crawl", self._api_crawl)
         app.router.add_post("/api/estop", self._api_estop)
+        app.router.add_post("/api/reset_estop", self._api_reset_estop)
         app.router.add_post("/api/read_only", self._api_read_only)
         app.router.add_post("/api/manual", self._api_manual)
         app.router.add_post("/api/auto", self._api_auto)
@@ -300,6 +301,9 @@ class WebControlNode(Node):
 
     async def _api_estop(self, request):
         return web.json_response(self._ros_api.emergency_stop())
+
+    async def _api_reset_estop(self, request):
+        return web.json_response(self._ros_api.reset_estop())
 
     async def _api_read_only(self, request):
         body = await request.json()

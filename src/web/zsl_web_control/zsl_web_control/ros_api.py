@@ -50,6 +50,7 @@ class RosApi:
         self._svc_lie_down = node.create_client(Trigger, f"/{self._drv_ns}/lie_down")
         self._svc_crawl = node.create_client(Trigger, f"/{self._drv_ns}/crawl")
         self._svc_emergency_stop = node.create_client(Trigger, f"/{self._drv_ns}/emergency_stop")
+        self._svc_reset_estop = node.create_client(Trigger, f"/{self._drv_ns}/reset_estop")
         self._svc_set_read_only = node.create_client(SetBool, f"/{self._drv_ns}/set_read_only")
 
     # ---- 订阅回调 ----
@@ -103,6 +104,9 @@ class RosApi:
 
     def emergency_stop(self) -> dict:
         return self._call_trigger(self._svc_emergency_stop, "emergency_stop")
+
+    def reset_estop(self) -> dict:
+        return self._call_trigger(self._svc_reset_estop, "reset_estop")
 
     def set_read_only(self, ro: bool) -> dict:
         if not self._svc_set_read_only.wait_for_service(timeout_sec=1.0):
