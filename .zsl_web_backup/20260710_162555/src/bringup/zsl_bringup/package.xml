@@ -3,7 +3,7 @@
   <name>zsl_bringup</name>
   <version>0.2.0</version>
   <description>ZSL-1W modular bringup for base, mapping, localization, navigation and web operations.</description>
-  <maintainer email="nvidia@example.com">nvidia</maintainer>
+  <maintainer email="nvidia@zsl-1w.local">nvidia</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

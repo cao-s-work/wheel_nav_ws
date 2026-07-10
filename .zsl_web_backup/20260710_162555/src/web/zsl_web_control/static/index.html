@@ -25,7 +25,7 @@
       <div class="sidebar-bottom">
         <div class="mini-status"><i id="side-web-dot"></i><span id="side-web">Web 离线</span></div>
         <div class="mini-status"><i id="side-sdk-dot"></i><span id="side-sdk">SDK 未连接</span></div>
-        <small>Commercial Console 0.4</small>
+        <small>Commercial Console 0.3</small>
       </div>
     </aside>
 
@@ -162,40 +162,6 @@
             <div class="panel-head"><div><p class="kicker">LIVE MAPPING</p><h2>实时建图状态</h2></div></div>
             <div class="metric-tiles"><div><small>LiDAR</small><b id="map-lidar-hz">0.0 Hz</b></div><div><small>Scan</small><b id="map-scan-hz">0.0 Hz</b></div><div><small>Odometry</small><b id="map-odom-hz">0.0 Hz</b></div><div><small>Map</small><b id="map-map-hz">0.0 Hz</b></div></div>
             <div class="map-meta"><div><span>地图尺寸</span><b id="map-size">--</b></div><div><span>分辨率</span><b id="map-resolution">--</b></div><div><span>地图目录</span><b id="map-root">--</b></div><div><span>管理进程</span><b id="mapping-process">未启动</b></div></div>
-          </article>
-          <article class="panel wide live-map-panel">
-            <div class="panel-head live-map-head">
-              <div><p class="kicker">SLAM VISUALIZATION</p><h2>实时建图画面</h2></div>
-              <div class="live-map-tools">
-                <button id="live-fit" class="btn ghost compact">全图</button>
-                <button id="live-follow" class="btn ghost compact active">跟随机器人</button>
-                <button id="live-toggle-scan" class="btn ghost compact active">激光点</button>
-                <button id="live-toggle-path" class="btn ghost compact active">轨迹</button>
-                <button id="live-reset-path" class="btn secondary compact">清空轨迹</button>
-              </div>
-            </div>
-            <div class="live-map-stage" id="live-map-stage">
-              <canvas id="live-map-canvas"></canvas>
-              <div id="live-map-empty" class="live-map-empty">
-                <b>等待实时地图</b>
-                <span>点击“开始建图”，并确认 /map、/scan 与 map → base_link TF 正常。</span>
-              </div>
-              <div class="live-map-hud">
-                <span><i class="legend-map"></i>栅格地图</span>
-                <span><i class="legend-scan"></i>激光点</span>
-                <span><i class="legend-path"></i>行驶轨迹</span>
-                <span><i class="legend-robot"></i>机器人</span>
-              </div>
-              <div id="live-map-coordinate" class="live-map-coordinate">X -- · Y --</div>
-            </div>
-            <div class="live-map-footer">
-              <div><small>画面状态</small><b id="live-map-state">等待数据</b></div>
-              <div><small>机器人位姿</small><b id="live-map-pose">--</b></div>
-              <div><small>激光点数</small><b id="live-map-scan-count">0</b></div>
-              <div><small>地图延迟</small><b id="live-map-age">--</b></div>
-              <div><small>显示比例</small><b id="live-map-scale">--</b></div>
-            </div>
-            <div class="notice info live-map-note"><b>操作提示</b><span>滚轮缩放，拖动画布平移；开启“跟随机器人”后画面会自动以机器狗为中心。</span></div>
           </article>
         </div>
       </section>

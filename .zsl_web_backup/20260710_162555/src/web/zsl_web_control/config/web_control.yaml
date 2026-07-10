@@ -1,6 +1,6 @@
 zsl_web_control_node:
   ros__parameters:
-    # 测试阶段监听全部网卡，可直接通过机器人 IP 访问。
+    # 默认仅本机监听。需要局域网访问时建议配置 api_token 后再改为 0.0.0.0。
     host: "0.0.0.0"
     port: 8080
     api_token: ""
@@ -18,15 +18,6 @@ zsl_web_control_node:
     map_topic: "/map"
     lidar_topic: "/livox/lidar"
     scan_topic: "/scan"
-
-    # 实时建图画面：/map 栅格 + TF 机器人位姿 + /scan 激光点 + 运动轨迹
-    live_map_enabled: true
-    live_map_frame: "map"
-    live_robot_frame: "base_link"
-    live_scan_max_points: 420
-    live_path_max_points: 2400
-    live_path_min_distance: 0.03
-    live_map_image_rate_hz: 1.0
     global_localization_service: "/reinitialize_global_localization"
     nomotion_update_service: "/request_nomotion_update"
 

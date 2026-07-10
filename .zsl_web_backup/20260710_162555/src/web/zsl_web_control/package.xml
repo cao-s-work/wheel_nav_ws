@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>zsl_web_control</name>
-  <version>0.4.0</version>
+  <version>0.3.0</version>
   <description>Commercial web control, mapping, map management, localization and Nav2 gateway for ZSL-1W.</description>
   <maintainer email="nvidia@localhost">nvidia</maintainer>
   <license>MIT</license>
@@ -18,7 +18,6 @@
   <depend>diagnostic_msgs</depend>
   <depend>action_msgs</depend>
   <depend>nav2_msgs</depend>
-  <depend>tf2_ros</depend>
 
   <exec_depend>python3-aiohttp</exec_depend>
   <exec_depend>python3-yaml</exec_depend>

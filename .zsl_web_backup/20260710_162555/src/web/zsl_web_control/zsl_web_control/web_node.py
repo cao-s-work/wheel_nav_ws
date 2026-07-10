@@ -29,7 +29,6 @@ except ImportError:  # pragma: no cover - deployment dependency
     web = None
     WSMsgType = None
 
-from .live_map_bridge import LiveMapBridge
 from .mapping_manager import MappingManager
 from .nav2_client import Nav2Client
 from .process_manager import ProcessManager
@@ -84,7 +83,6 @@ class WebControlNode(Node):
         self._ros_api = RosApi(self, self._journal)
         self._nav2 = Nav2Client(self, self._journal)
         self._mapping = MappingManager(self, self._journal, self._processes, self._nav2)
-        self._live_map = LiveMapBridge(self)
         self._safety = SafetyGate(
             deadman_timeout_s=float(self.get_parameter("teleop_deadman_s").value),
             max_vx=float(self.get_parameter("web_max_vx").value),
@@ -138,13 +136,6 @@ class WebControlNode(Node):
             "map_topic": "/map",
             "lidar_topic": "/livox/lidar",
             "scan_topic": "/scan",
-            "live_map_enabled": True,
-            "live_map_frame": "map",
-            "live_robot_frame": "base_link",
-            "live_scan_max_points": 420,
-            "live_path_max_points": 2400,
-            "live_path_min_distance": 0.03,
-            "live_map_image_rate_hz": 1.0,
             "global_localization_service": "/reinitialize_global_localization",
             "nomotion_update_service": "/request_nomotion_update",
             "map_save_service": "/map_saver/save_map",
@@ -252,9 +243,6 @@ class WebControlNode(Node):
         app.router.add_get("/api/v1/mapping/status", self._api_mapping_status)
         app.router.add_post("/api/v1/mapping/start", self._api_mapping_start)
         app.router.add_post("/api/v1/mapping/stop", self._api_mapping_stop)
-        app.router.add_get("/api/v1/live_mapping", self._api_live_mapping)
-        app.router.add_get("/api/v1/live_mapping/map.png", self._api_live_map_png)
-        app.router.add_post("/api/v1/live_mapping/reset_path", self._api_live_reset_path)
 
         app.router.add_get("/api/v1/navigation/status", self._api_nav_status)
         app.router.add_post("/api/v1/navigation/start", self._api_nav_start)
@@ -539,30 +527,10 @@ class WebControlNode(Node):
 
     async def _api_mapping_start(self, _):
         self._set_manual_mode(True, cancel_nav=True)
-        self._live_map.reset_path()
         return self._response(await self._run(self._mapping.start_mapping))
 
     async def _api_mapping_stop(self, _):
         return self._response(await self._run(self._mapping.stop_mapping))
-
-    async def _api_live_mapping(self, _):
-        return web.json_response({"success": True, "data": self._live_map.snapshot()})
-
-    async def _api_live_map_png(self, _):
-        image, version = await self._run(self._live_map.map_png)
-        if image is None:
-            return web.Response(status=404, text="live map unavailable")
-        return web.Response(
-            body=image,
-            content_type="image/png",
-            headers={
-                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-                "X-Live-Map-Version": str(version),
-            },
-        )
-
-    async def _api_live_reset_path(self, _):
-        return self._response(await self._run(self._live_map.reset_path))
 
     async def _api_nav_status(self, _):
         return web.json_response({"success": True, "data": self._nav2.status()})
