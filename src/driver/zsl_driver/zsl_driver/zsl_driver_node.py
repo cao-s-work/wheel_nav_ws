@@ -27,6 +27,7 @@ from sensor_msgs.msg import BatteryState
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from std_msgs.msg import Bool, UInt32, Float32
 from std_srvs.srv import Trigger, SetBool
+import time
 
 from zsl_driver.sdk_wrapper import SdkWrapper, MODE_STAND, MODE_PASSIVE
 
@@ -53,6 +54,13 @@ class ZslDriverNode(Node):
         # ——— SDK 封装 ———
         self._sdk = SdkWrapper(read_only=read_only, sdk_lib_dir=sdk_lib_dir)
 
+        # ——— 急停 / 故障状态（必须在 services 和 timers 之前初始化） ———
+        self._estop_latched = False
+        self._move_failure_count = 0
+        self._last_cmd = Twist()
+        self._cmd_received = False
+        self._last_cmd_monotonic = time.monotonic()
+
         # ——— Service 工厂（对标铜锤 CreateServices） ———
         self._create_services()
 
@@ -69,9 +77,6 @@ class ZslDriverNode(Node):
         self._cmd_vel_sub = self.create_subscription(
             Twist, "cmd_vel_safe", self._cmd_vel_cb, 10
         )
-        self._last_cmd = Twist()
-        self._cmd_received = False
-        self._last_cmd_time = self.get_clock().now()
 
         # ——— 定时器 ———
         self._cmd_timer = self.create_timer(1.0 / cmd_rate, self._cmd_tick)
@@ -80,6 +85,7 @@ class ZslDriverNode(Node):
         # ——— 状态 Topic 发布 ———
         self._pub_connection = self.create_publisher(Bool, "~/connection", 10)
         self._pub_read_only = self.create_publisher(Bool, "~/read_only", 10)
+        self._pub_estop = self.create_publisher(Bool, "~/estop_latched", 10)
         self._pub_ctrl_mode = self.create_publisher(UInt32, "~/ctrl_mode", 10)
         self._pub_cmd_watchdog = self.create_publisher(Float32, "~/cmd_watchdog", 10)
         self._pub_battery = self.create_publisher(BatteryState, "~/battery", 10)
@@ -102,6 +108,7 @@ class ZslDriverNode(Node):
 
         # 紧急
         self.create_service(Trigger, "~/emergency_stop", self._srv_emergency_stop)
+        self.create_service(Trigger, "~/reset_estop", self._srv_reset_estop)
 
         # 控制权（兼容铜锤接口，ZSL-1W 无实际操作）
         self.create_service(Trigger, "~/take_control", self._srv_take_control)
@@ -131,14 +138,46 @@ class ZslDriverNode(Node):
         return resp
 
     def _srv_emergency_stop(self, req, resp):
+        self._estop_latched = True
+        self._cmd_received = False
+        self._last_cmd = Twist()
+        self._last_cmd_monotonic = time.monotonic()
         ok = self._sdk.emergency_stop()
+        # 即使 SDK 急停失败，也阻止后续普通 move
+        lock_ok = self._sdk.set_read_only(True)
         resp.success = ok
-        resp.message = "ok" if ok else "emergency_stop failed"
+        resp.message = (
+            "emergency stop latched"
+            if ok
+            else "estop latched; SDK emergency_stop failed"
+        )
+        if not lock_ok:
+            resp.message += "; read_only lock failed"
         return resp
 
     def _srv_take_control(self, req, resp):
         resp.success = True
         resp.message = "no-op for ZSL-1W"
+        return resp
+
+    def _srv_reset_estop(self, req, resp):
+        if not self._sdk.connected:
+            resp.success = False
+            resp.message = "SDK disconnected"
+            return resp
+        # 清空历史速度，防止复位后恢复旧命令
+        self._cmd_received = False
+        self._last_cmd = Twist()
+        self._last_cmd_monotonic = time.monotonic()
+        self._move_failure_count = 0
+        # 解除急停锁存，但保持运动锁定
+        self._sdk.set_read_only(True)
+        self._estop_latched = False
+        resp.success = True
+        resp.message = (
+            "estop reset; robot remains read_only and must be "
+            "explicitly unlocked"
+        )
         return resp
 
     def _srv_release_control(self, req, resp):
@@ -147,9 +186,17 @@ class ZslDriverNode(Node):
         return resp
 
     def _srv_set_read_only(self, req, resp):
-        self._sdk.set_read_only(req.data)
-        resp.success = True
-        resp.message = f"read_only={'true' if req.data else 'false'}"
+        if not req.data and self._estop_latched:
+            resp.success = False
+            resp.message = "cannot unlock while estop is latched"
+            return resp
+        ok = self._sdk.set_read_only(req.data)
+        resp.success = ok
+        resp.message = (
+            f"read_only={'true' if req.data else 'false'}"
+            if ok
+            else "failed to change read_only"
+        )
         return resp
 
     # =========================================================================
@@ -157,29 +204,36 @@ class ZslDriverNode(Node):
     # =========================================================================
 
     def _cmd_vel_cb(self, msg: Twist):
+        if self._estop_latched:
+            return
         self._last_cmd = msg
         self._cmd_received = True
-        self._last_cmd_time = self.get_clock().now()
+        self._last_cmd_monotonic = time.monotonic()
 
     def _cmd_tick(self):
         """
-        定时发送速度指令。对标铜锤 CmdVelTick():
-          age_ms < timeout → 发 move; 否则发零速。
+        定时发送速度指令。对标铜锤 CmdVelTick().
         """
+        if self._estop_latched:
+            return
         if not self._sdk.connected:
             return
         if not self._cmd_received:
             return
 
-        age_ms = (self.get_clock().now() - self._last_cmd_time).nanoseconds / 1e6
-        if age_ms < self._cmd_vel_timeout_ms:
+        age_s = time.monotonic() - self._last_cmd_monotonic
+        if age_s < self._cmd_vel_timeout_ms / 1000.0:
             vx = max(-1.0, min(1.0, self._last_cmd.linear.x * self._speed_scale))
             vy = max(-1.0, min(1.0, self._last_cmd.linear.y * self._speed_scale))
             wz = max(-1.0, min(1.0, self._last_cmd.angular.z * self._angular_scale))
         else:
             vx = vy = wz = 0.0
 
-        self._sdk.move(vx, vy, wz)
+        ok = self._sdk.move(vx, vy, wz)
+        if ok:
+            self._move_failure_count = 0
+        else:
+            self._move_failure_count += 1
 
     # =========================================================================
     # 状态发布（对标铜锤 PublishState）
@@ -198,12 +252,19 @@ class ZslDriverNode(Node):
         msg_ro = Bool(data=self._sdk.read_only)
         self._pub_read_only.publish(msg_ro)
 
+        # estop_latched (Bool)
+        self._pub_estop.publish(Bool(data=self._estop_latched))
+
         # ctrl_mode (UInt32)
         msg_mode = UInt32(data=snap.mode if snap.mode >= 0 else 0)
         self._pub_ctrl_mode.publish(msg_mode)
 
-        # cmd_watchdog: cmd_vel age in seconds
-        age_s = (now - self._last_cmd_time).nanoseconds / 1e9 if self._cmd_received else -1.0
+        # cmd_watchdog: cmd_vel age in seconds (monotonic)
+        age_s = (
+            time.monotonic() - self._last_cmd_monotonic
+            if self._cmd_received
+            else -1.0
+        )
         msg_wd = Float32(data=float(age_s))
         self._pub_cmd_watchdog.publish(msg_wd)
 
@@ -225,6 +286,8 @@ class ZslDriverNode(Node):
         sdk_status.values = [
             KeyValue(key="connected", value=str(snap.connected)),
             KeyValue(key="read_only", value=str(self._sdk.read_only)),
+            KeyValue(key="estop_latched", value=str(self._estop_latched)),
+            KeyValue(key="move_failure_count", value=str(self._move_failure_count)),
             KeyValue(key="ctrl_mode", value=str(snap.mode)),
             KeyValue(key="battery_percent", value=f"{snap.battery:.1f}"),
             KeyValue(key="cmd_watchdog_s", value=f"{age_s:.3f}"),
@@ -232,7 +295,10 @@ class ZslDriverNode(Node):
 
         cmd_status = DiagnosticStatus()
         cmd_status.name = "zsl_driver/cmd_vel"
-        if age_s < 0:
+        if self._estop_latched:
+            cmd_status.level = DiagnosticStatus.ERROR
+            cmd_status.message = "emergency stop latched"
+        elif age_s < 0:
             cmd_status.level = DiagnosticStatus.WARN
             cmd_status.message = "no cmd_vel received yet"
         elif age_s > self._cmd_vel_timeout_ms / 1000.0:
