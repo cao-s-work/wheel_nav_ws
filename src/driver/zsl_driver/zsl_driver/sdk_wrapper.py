@@ -244,10 +244,6 @@ class SdkWrapper:
         """后台线程：执行 lie_down 序列（持有 RLock）。"""
         try:
             with self._lock:
-                self._app.crawl(0.3, 0.0, 0.0)
-                time.sleep(1.5)
-                self._app.cancelCrawl()
-                time.sleep(0.5)
                 self._app.passive()
         except Exception as e:
             self._action_error = str(e)
@@ -257,14 +253,14 @@ class SdkWrapper:
             self._action_thread = None
 
     def crawl(self) -> bool:
-        """匍匐/下蹲。ZSL-1W: crawl(vx,vy,yaw_rate) 慢速匍匐。"""
+        """匍匐/下蹲。原地匍匐（不前进）。"""
         if self._action_active:
             return False
         if not self._app or self._read_only:
             return False
         try:
             with self._lock:
-                self._app.crawl(0.3, 0.0, 0.0)
+                self._app.crawl(0.0, 0.0, 0.0)
             return True
         except Exception as e:
             print(f"[SdkWrapper] crawl failed: {e}")
