@@ -229,7 +229,7 @@ start_stack() {
       warn "没有检测到 /map，请检查："
       warn "  tail -f $MAPPING_LOG"
       warn "  ros2 topic hz /scan"
-      warn "  ros2 run tf2_ros tf2_echo camera_init base_link"
+      warn "  ros2 run tf2_ros tf2_echo odom base_link"
     }
   fi
 

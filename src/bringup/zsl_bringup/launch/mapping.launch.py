@@ -20,7 +20,7 @@ def generate_launch_description():
         parameters=[
             {
                 "use_sim_time": use_sim_time,
-                "odom_frame": "camera_init",
+                "odom_frame": "odom",
                 "map_frame": "map",
                 "base_frame": "base_link",
                 "scan_topic": "/scan",
