@@ -84,7 +84,7 @@ class WebControlNode(Node):
 
         # 参数
         self.declare_parameter("port", 8080)
-        self.declare_parameter("host", "0.0.0.0")
+        self.declare_parameter("host", "127.0.0.1")
         self.declare_parameter("static_dir", "")
         port = self.get_parameter("port").value
         host = self.get_parameter("host").value
@@ -102,8 +102,8 @@ class WebControlNode(Node):
         # WebSocket 管理
         self._ws_mgr = WebSocketManager()
 
-        # cmd_vel publisher (到 zsl_driver)
-        self._cmd_pub = self.create_publisher(Twist, "cmd_vel", 10)
+        # cmd_vel publisher (到 cmd_vel_mux)
+        self._cmd_pub = self.create_publisher(Twist, "cmd_vel_teleop", 10)
 
         # 状态发布定时器 10Hz
         self._state_timer = self.create_timer(0.1, self._publish_state)
@@ -192,6 +192,11 @@ class WebControlNode(Node):
                     break
         finally:
             self._ws_mgr.remove(ws)
+            # 连接断开 → 清零该客户端的 teleop 指令
+            with self._teleop_lock:
+                self._teleop_vx = 0.0
+                self._teleop_vy = 0.0
+                self._teleop_wz = 0.0
         return ws
 
     async def _handle_ws_msg(self, ws, data):
@@ -206,7 +211,7 @@ class WebControlNode(Node):
                 self._teleop_vx = vx
                 self._teleop_vy = vy
                 self._teleop_wz = wz
-            self._safety.heartbeat()
+            self._safety.teleop_heartbeat()
 
     # ---- REST API ----
 
@@ -225,6 +230,7 @@ class WebControlNode(Node):
     async def _api_read_only(self, request):
         body = await request.json()
         ro = bool(body.get("read_only", True))
+        self._safety.read_only = ro
         return web.json_response(self._ros_api.set_read_only(ro))
 
     async def _api_heartbeat(self, request):
@@ -240,7 +246,7 @@ class WebControlNode(Node):
             self._teleop_vx = vx
             self._teleop_vy = vy
             self._teleop_wz = wz
-        self._safety.heartbeat()
+        self._safety.teleop_heartbeat()
         return web.json_response({"ok": True})
 
     async def _api_state(self, request):
@@ -283,8 +289,8 @@ class WebControlNode(Node):
         self._cmd_pub.publish(twist)
 
     def _check_deadman(self):
-        """20Hz deadman 检查 — 超时归零 teleop。"""
-        if not self._safety.heartbeat_alive:
+        """20Hz deadman 检查 — 速度心跳超时归零 teleop。"""
+        if not self._safety.teleop_alive:
             with self._teleop_lock:
                 self._teleop_vx = 0.0
                 self._teleop_vy = 0.0

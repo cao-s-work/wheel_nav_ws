@@ -67,7 +67,7 @@ class ZslDriverNode(Node):
 
         # ——— cmd_vel 订阅（对标铜锤 cmd_vel_sub_） ———
         self._cmd_vel_sub = self.create_subscription(
-            Twist, "cmd_vel", self._cmd_vel_cb, 10
+            Twist, "cmd_vel_safe", self._cmd_vel_cb, 10
         )
         self._last_cmd = Twist()
         self._cmd_received = False
@@ -147,7 +147,7 @@ class ZslDriverNode(Node):
         return resp
 
     def _srv_set_read_only(self, req, resp):
-        self._sdk._read_only = req.data
+        self._sdk.set_read_only(req.data)
         resp.success = True
         resp.message = f"read_only={'true' if req.data else 'false'}"
         return resp

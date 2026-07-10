@@ -3,7 +3,7 @@
 web_control:
   ros__parameters:
     port: 8080
-    host: "0.0.0.0"
+    host: "127.0.0.1"
 
     # 安全
     deadman_timeout_s: 0.3

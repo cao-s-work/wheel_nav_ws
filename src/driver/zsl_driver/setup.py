@@ -34,6 +34,7 @@ setup(
     entry_points={
         'console_scripts': [
             'zsl_driver_node = zsl_driver.zsl_driver_node:main',
+            'cmd_vel_mux = zsl_driver.cmd_vel_mux:main',
             'sdk_check = zsl_driver.sdk_check:main',
         ],
     },

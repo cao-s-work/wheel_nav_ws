@@ -72,6 +72,18 @@ def generate_launch_description():
         }],
     )
 
+    # 5. cmd_vel_mux (合并 teleop + nav → safe)
+    cmd_vel_mux_node = Node(
+        package="zsl_driver",
+        executable="cmd_vel_mux",
+        name="cmd_vel_mux",
+        output="screen",
+        parameters=[{
+            "nav_timeout_s": 0.5,
+            "teleop_timeout_s": 0.5,
+        }],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("read_only", default_value="true"),
         DeclareLaunchArgument("use_gpu", default_value="false"),
@@ -80,4 +92,5 @@ def generate_launch_description():
         fast_lio_launch,
         pcl_node,
         zsl_driver_node,
+        cmd_vel_mux_node,
     ])

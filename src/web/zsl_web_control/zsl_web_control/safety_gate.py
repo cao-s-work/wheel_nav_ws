@@ -39,6 +39,7 @@ class SafetyGate:
     # 内部状态
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _last_heartbeat: float = 0.0
+    _last_teleop_time: float = 0.0
     _read_only: bool = True
     _last_vx: float = 0.0
     _last_vy: float = 0.0
@@ -49,14 +50,24 @@ class SafetyGate:
     # =========================================================================
 
     def heartbeat(self):
-        """外部（WebSocket/Browser）定时调用，维持 deadman。"""
+        """外部（WebSocket/Browser）定时调用，维持连接活性 deadman。"""
         with self._lock:
-            self._last_heartbeat = time.time()
+            self._last_heartbeat = time.monotonic()
+
+    def teleop_heartbeat(self):
+        """速度消息专用心跳，刷新 teleop deadman。"""
+        with self._lock:
+            self._last_teleop_time = time.monotonic()
 
     @property
     def heartbeat_alive(self) -> bool:
         with self._lock:
-            return (time.time() - self._last_heartbeat) < self.deadman_timeout_s
+            return (time.monotonic() - self._last_heartbeat) < self.deadman_timeout_s
+
+    @property
+    def teleop_alive(self) -> bool:
+        with self._lock:
+            return (time.monotonic() - self._last_teleop_time) < self.deadman_timeout_s
 
     # =========================================================================
     # read_only 闸门
@@ -80,15 +91,17 @@ class SafetyGate:
         """
         返回安全过滤后的 (vx, vy, wz)。
         - read_only → (0,0,0)
-        - deadman 超时 → (0,0,0)
+        - 速度心跳超时 → (0,0,0)（仅 teleop_heartbeat 可保活）
         - lateral_enabled=False → vy=0
         - 限幅 clamped
         """
+        now = time.monotonic()
         with self._lock:
             if self._read_only:
                 return (0.0, 0.0, 0.0)
 
-            if not self.heartbeat_alive:
+            teleop_alive = (now - self._last_teleop_time) < self.deadman_timeout_s
+            if not teleop_alive:
                 return (0.0, 0.0, 0.0)
 
             scale = SPEED_LEVELS.get(self.speed_level, 0.3)

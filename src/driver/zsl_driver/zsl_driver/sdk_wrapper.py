@@ -60,34 +60,24 @@ def _resolve_sdk_lib_dir(explicit_dir: str | None = None) -> str | None:
     return None  # 全部未找到
 
 
-_SDK_LIB_DIR: str | None = _resolve_sdk_lib_dir()
-if _SDK_LIB_DIR is None:
-    raise RuntimeError(
-        "ZSL-1W SDK .so 未找到！\n"
-        "  请通过以下任一方式指定：\n"
-        "  1) 参数: sdk_lib_dir:=/path/to/sdk\n"
-        "  2) 环境变量: export ZSL_SDK_LIB_DIR=/path/to/sdk\n"
-        "  3) 将 .so 放入 ~/gb_ws2/sdk/.../lib/zsl-1w/{arch}/\n"
-        "  4) 放入本包 zsl_driver/sdk_lib/ 目录\n"
-        f"  当前架构: {_platform.machine()}, Python {sys.version_info.major}.{sys.version_info.minor}"
-    )
+def _load_sdk(sdk_lib_dir: str):
+    """延迟加载 SDK 模块（在 SdkWrapper.connect() 时调用）。"""
+    if sdk_lib_dir not in sys.path:
+        sys.path.insert(0, sdk_lib_dir)
 
-# 注册到 Python path
-if _SDK_LIB_DIR not in sys.path:
-    sys.path.insert(0, _SDK_LIB_DIR)
+    # 预加载 C++ 依赖 so
+    try:
+        for _fname in os.listdir(sdk_lib_dir):
+            if _fname.startswith("libmc_sdk_") and _fname.endswith(".so"):
+                _ctypes.CDLL(os.path.join(sdk_lib_dir, _fname), mode=_ctypes.RTLD_GLOBAL)
+    except Exception:
+        pass
 
-# 预加载 C++ 依赖 so（libmc_sdk_zsl_1w_*.so），避免依赖 LD_LIBRARY_PATH
-try:
-    for _fname in os.listdir(_SDK_LIB_DIR):
-        if _fname.startswith("libmc_sdk_") and _fname.endswith(".so"):
-            _ctypes.CDLL(os.path.join(_SDK_LIB_DIR, _fname), mode=_ctypes.RTLD_GLOBAL)
-except Exception:
-    pass
+    # 注入 LD_LIBRARY_PATH
+    os.environ["LD_LIBRARY_PATH"] = sdk_lib_dir + ":" + os.environ.get("LD_LIBRARY_PATH", "")
 
-# 注入子进程的 LD_LIBRARY_PATH
-os.environ["LD_LIBRARY_PATH"] = _SDK_LIB_DIR + ":" + os.environ.get("LD_LIBRARY_PATH", "")
-
-import mc_sdk_zsl_1w_py as _sdk  # noqa: E402
+    import mc_sdk_zsl_1w_py as sdk
+    return sdk
 
 
 # ——— 模式码 ———
@@ -129,8 +119,9 @@ class SdkWrapper:
     def __init__(self, read_only: bool = True, sdk_lib_dir: str | None = None):
         self._read_only = read_only
         self._app = None
+        self._sdk = None  # 延迟加载
         self._cache = RobotDataCache(lock=threading.Lock())
-        self._sdk_lib_dir = sdk_lib_dir  # 记录用于诊断
+        self._sdk_lib_dir = _resolve_sdk_lib_dir(sdk_lib_dir)
 
     # =========================================================================
     # 连接管理
@@ -140,9 +131,23 @@ class SdkWrapper:
         """
         初始化 SDK 连接。
         对标铜锤 client_->Connect(ip, port)。
+        首次调用时延迟加载 SDK。
         """
+        if self._sdk is None:
+            if self._sdk_lib_dir is None:
+                raise RuntimeError(
+                    "ZSL-1W SDK .so 未找到！\n"
+                    "  请通过以下任一方式指定：\n"
+                    "  1) 参数: sdk_lib_dir:=/path/to/sdk\n"
+                    "  2) 环境变量: export ZSL_SDK_LIB_DIR=/path/to/sdk\n"
+                    "  3) 将 .so 放入 ~/gb_ws2/sdk/.../lib/zsl-1w/{arch}/\n"
+                    "  4) 放入本包 zsl_driver/sdk_lib/ 目录\n"
+                    f"  当前架构: {_platform.machine()}, Python {sys.version_info.major}.{sys.version_info.minor}"
+                )
+            self._sdk = _load_sdk(self._sdk_lib_dir)
+
         try:
-            self._app = _sdk.HighLevel()
+            self._app = self._sdk.HighLevel()
             self._app.initRobot(local_ip, local_port, dog_ip)
             # 等待握手完成
             deadline = time.time() + timeout
@@ -182,7 +187,7 @@ class SdkWrapper:
 
     def stand_up(self) -> bool:
         """站立。ZSL-1W: standUp()。"""
-        if not self._app:
+        if not self._app or self._read_only:
             return False
         try:
             self._app.standUp()
@@ -196,7 +201,7 @@ class SdkWrapper:
         安全趴下：先 crawl 匍匐 → cancelCrawl → passive。
         对标铜锤 LieDown。
         """
-        if not self._app:
+        if not self._app or self._read_only:
             return False
         try:
             self._app.crawl(0.3, 0.0, 0.0)
@@ -211,7 +216,7 @@ class SdkWrapper:
 
     def crawl(self) -> bool:
         """匍匐/下蹲。ZSL-1W: crawl(vx,vy,yaw_rate) 慢速匍匐。"""
-        if not self._app:
+        if not self._app or self._read_only:
             return False
         try:
             self._app.crawl(0.3, 0.0, 0.0)
@@ -252,11 +257,36 @@ class SdkWrapper:
     # 急停
     # =========================================================================
 
+    def stop_force(self) -> bool:
+        """发零速度，绕过 read_only 检查。"""
+        if not self._app:
+            return False
+        try:
+            self._app.move(0.0, 0.0, 0.0)
+            return True
+        except Exception:
+            return False
+
+    def set_read_only(self, ro: bool):
+        """上锁：先发零速度再置位，避免锁住运动中的狗。"""
+        if ro:
+            self.stop_force()
+        self._read_only = ro
+
     def emergency_stop(self) -> bool:
-        """急停 — 停车后趴下。"""
-        self.stop()
-        time.sleep(0.5)
-        return self.lie_down()
+        """急停：立即零速 + passive，不允许 sleep/crawl。"""
+        if not self._app:
+            return False
+        try:
+            self._app.move(0.0, 0.0, 0.0)
+        except Exception:
+            pass
+        try:
+            self._app.passive()
+            return True
+        except Exception as exc:
+            print(f"[SdkWrapper] emergency_stop failed: {exc}")
+            return False
 
     # =========================================================================
     # 控制权（ZSL-1W 无此概念，保留接口兼容）

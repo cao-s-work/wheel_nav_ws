@@ -34,6 +34,9 @@ def generate_launch_description():
             "params_file": params_file if params_file != "" else default_params,
             "autostart": "true",
         }.items(),
+        remappings=[
+            ("cmd_vel", "cmd_vel_nav"),
+        ],
     )
 
     # map_server

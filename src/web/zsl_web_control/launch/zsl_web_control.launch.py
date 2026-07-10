@@ -10,7 +10,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("port", default_value="8080"),
-        DeclareLaunchArgument("host", default_value="0.0.0.0"),
+        DeclareLaunchArgument("host", default_value="127.0.0.1"),
         DeclareLaunchArgument("static_dir", default_value=""),
 
         Node(
