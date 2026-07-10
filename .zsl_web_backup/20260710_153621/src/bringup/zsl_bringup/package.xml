@@ -1,9 +1,10 @@
 <?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>zsl_bringup</name>
-  <version>0.2.0</version>
-  <description>ZSL-1W modular bringup for base, mapping, localization, navigation and web operations.</description>
-  <maintainer email="nvidia@zsl-1w.local">nvidia</maintainer>
+  <version>0.1.0</version>
+  <description>ZSL-1W 统一 bringup — modular launch files for robot_base, mapping, localization, navigation, web</description>
+  <maintainer email="nvidia@localhost.local">nvidia</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -16,10 +17,6 @@
   <exec_depend>robot_navigation2</exec_depend>
   <exec_depend>amcl_registration</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
-  <exec_depend>nav2_map_server</exec_depend>
-  <exec_depend>nav2_lifecycle_manager</exec_depend>
-  <exec_depend>slam_toolbox</exec_depend>
-  <exec_depend>rviz2</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

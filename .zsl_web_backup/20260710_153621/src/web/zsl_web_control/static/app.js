@@ -224,18 +224,8 @@ function renderState() {
   $("#manual-lock-state").textContent = robot.read_only ? "已锁定" : "已解锁";
 
   const mappingActive = Boolean(mapping.slam_active);
-  const mappingJob = mapping.mapping_job || {};
-  const mappingState = mappingJob.state || (mappingActive ? "running" : "idle");
-  const mappingLabels = { idle: "未运行", starting: "启动中", running: "建图运行中", degraded: "部分就绪", failed: "启动失败" };
-  const mappingClasses = { idle: "neutral", starting: "warn", running: "good", degraded: "warn", failed: "bad" };
-  $("#mapping-tag").textContent = mappingLabels[mappingState] || mappingState;
-  $("#mapping-tag").className = `tag ${mappingClasses[mappingState] || "neutral"}`;
-  const jobNotice = $("#mapping-job-notice");
-  jobNotice.className = `notice ${mappingState === "failed" ? "danger" : mappingState === "running" ? "success" : mappingState === "starting" || mappingState === "degraded" ? "warning" : "info"}`;
-  jobNotice.querySelector("b").textContent = mappingLabels[mappingState] || "建图状态";
-  $("#mapping-job-message").textContent = mappingJob.message || "点击“开始建图”后，系统将自动启动完整建图链路。";
-  $("#mapping-start").disabled = mappingState === "starting" || mappingState === "running";
-  $("#mapping-stop").disabled = mappingState === "idle";
+  $("#mapping-tag").textContent = mappingActive ? "建图运行中" : "未运行";
+  $("#mapping-tag").className = `tag ${mappingActive ? "good" : "neutral"}`;
   $("#map-lidar-hz").textContent = `${Number(mapping.lidar?.hz || 0).toFixed(1)} Hz`;
   $("#map-scan-hz").textContent = `${Number(mapping.scan?.hz || 0).toFixed(1)} Hz`;
   $("#map-odom-hz").textContent = `${Number(mapping.odometry?.hz || 0).toFixed(1)} Hz`;
@@ -243,9 +233,7 @@ function renderState() {
   $("#map-size").textContent = mapping.map_info ? `${mapping.map_info.width} × ${mapping.map_info.height}` : "--";
   $("#map-resolution").textContent = mapping.map_info ? `${mapping.map_info.resolution} m` : "--";
   $("#map-root").textContent = mapping.map_root || "--";
-  $("#mapping-process").textContent = mappingJob.script_enabled
-    ? `脚本模式 · ${mappingLabels[mappingState] || mappingState}`
-    : (mapping.processes?.mapping?.running ? `PID ${mapping.processes.mapping.pid}` : "未启动");
+  $("#mapping-process").textContent = mapping.processes?.mapping?.running ? `PID ${mapping.processes.mapping.pid}` : "未启动";
 
   $("#nav-stack-tag").textContent = mapping.navigation_active ? "已启动" : "未启动";
   $("#nav-stack-tag").className = `tag ${mapping.navigation_active ? "good" : "neutral"}`;
@@ -508,15 +496,7 @@ function bindEvents() {
   $("#top-estop").onclick = estop;
   $("#manual-estop").onclick = estop;
 
-  $("#mapping-start").onclick = async () => {
-    const button = $("#mapping-start");
-    button.disabled = true;
-    button.textContent = "正在启动…";
-    const result = await action("/api/v1/mapping/start", "开始建图");
-    if (result.success) navigate("mapping");
-    button.textContent = "开始建图";
-    await refreshState();
-  };
+  $("#mapping-start").onclick = () => action("/api/v1/mapping/start", "开始建图");
   $("#mapping-stop").onclick = async () => {
     if (await confirmAction("停止建图", "停止由网页启动的建图进程。尚未保存的地图不会自动保存。")) action("/api/v1/mapping/stop", "停止建图");
   };

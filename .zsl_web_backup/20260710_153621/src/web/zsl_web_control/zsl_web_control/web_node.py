@@ -115,6 +115,15 @@ class WebControlNode(Node):
         self.create_timer(0.1, self._watch_control_lease)
         self.create_timer(0.5, self._broadcast_state_from_ros)
 
+        # 订阅驱动真实状态（驱动是真值源）
+        self._estop_latched = False
+        self.create_subscription(
+            Bool, "/zsl_driver_node/read_only", self._on_driver_read_only, 10
+        )
+        self.create_subscription(
+            Bool, "/zsl_driver_node/estop_latched", self._on_driver_estop, 10
+        )
+
         self._web_loop: asyncio.AbstractEventLoop | None = None
         self._web_thread: threading.Thread | None = None
         self._runner = None
@@ -144,10 +153,6 @@ class WebControlNode(Node):
             "map_image_format": "png",
             "map_save_cli_fallback": True,
             "mapping_command": "ros2 launch zsl_bringup mapping.launch.py",
-            "mapping_script_enabled": True,
-            "mapping_script_path": "",
-            "workspace_root": "",
-            "mapping_ready_timeout_s": 60.0,
             "navigation_command": "ros2 launch zsl_bringup managed_navigation.launch.py map_file:={map}",
             "managed_log_root": "~/.ros/zsl_web_control/logs",
             "controller_lease_s": 5.0,
@@ -607,6 +612,19 @@ class WebControlNode(Node):
         if self._web_loop and self._web_loop.is_running():
             self._web_loop.call_soon_threadsafe(self._web_loop.stop)
         super().destroy_node()
+
+    def _on_driver_read_only(self, msg: Bool):
+        """驱动是真值源 — Web 只同步不自行认定。"""
+        self._safety.read_only = msg.data
+
+    def _on_driver_estop(self, msg: Bool):
+        """急停锁存 → 释放控制权。"""
+        if msg.data:
+            self._controller_id = None
+            self._controller_expire = 0.0
+            self._estop_latched = True
+        else:
+            self._estop_latched = False
 
 
 def main(args=None):

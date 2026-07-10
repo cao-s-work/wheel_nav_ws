@@ -14,7 +14,6 @@ from typing import Any
 from urllib.parse import quote
 
 import yaml
-from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from nav2_msgs.srv import LoadMap, SaveMap
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.node import Node
@@ -48,27 +47,6 @@ class MappingManager:
 
         self._mapping_command = str(node.get_parameter("mapping_command").value)
         self._navigation_command = str(node.get_parameter("navigation_command").value)
-        self._mapping_script_enabled = bool(node.get_parameter("mapping_script_enabled").value)
-        configured_script = str(node.get_parameter("mapping_script_path").value).strip()
-        if configured_script:
-            self._mapping_script = Path(os.path.expanduser(configured_script)).resolve()
-        else:
-            try:
-                self._mapping_script = (
-                    Path(get_package_share_directory("zsl_bringup"))
-                    / "scripts"
-                    / "zsl_mapping.sh"
-                ).resolve()
-            except PackageNotFoundError:
-                # 保持 Web 节点可启动；点击建图时返回明确缺包错误。
-                self._mapping_script = Path("/nonexistent/zsl_bringup/scripts/zsl_mapping.sh")
-        self._workspace_root = str(node.get_parameter("workspace_root").value).strip()
-        self._mapping_ready_timeout_s = max(10.0, float(node.get_parameter("mapping_ready_timeout_s").value))
-        self._mapping_job_state = "idle"
-        self._mapping_job_message = "未启动"
-        self._mapping_job_started_at = 0.0
-        self._mapping_job_thread: threading.Thread | None = None
-        self._mapping_cancel = threading.Event()
         self._map_topic = str(node.get_parameter("map_topic").value)
         self._lidar_topic = str(node.get_parameter("lidar_topic").value)
         self._scan_topic = str(node.get_parameter("scan_topic").value)
@@ -373,140 +351,20 @@ class MappingManager:
                 return None
         return cache
 
-    def _set_mapping_job(self, state: str, message: str) -> None:
-        with self._lock:
-            self._mapping_job_state = state
-            self._mapping_job_message = message
-            if state == "starting":
-                self._mapping_job_started_at = time.time()
-
-    def _script_env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        env["ZSL_MAP_DIR"] = str(self.map_root)
-        env["ZSL_READ_ONLY"] = "true"
-        env["ZSL_RVIZ"] = "false"
-        env["ZSL_START_BASE"] = "true"
-        env["ZSL_NO_WAIT"] = "true"
-        if self._workspace_root:
-            env["ZSL_WS"] = os.path.expanduser(self._workspace_root)
-        return env
-
-    def _run_mapping_script(self, action: str, timeout_s: float) -> dict[str, Any]:
-        if not self._mapping_script.exists():
-            return {
-                "success": False,
-                "message": f"mapping script does not exist: {self._mapping_script}",
-            }
-        if not os.access(self._mapping_script, os.X_OK):
-            return {
-                "success": False,
-                "message": f"mapping script is not executable: {self._mapping_script}",
-            }
-        try:
-            result = subprocess.run(
-                [str(self._mapping_script), action],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=timeout_s,
-                check=False,
-                text=True,
-                env=self._script_env(),
-            )
-        except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or "")[-1200:] if isinstance(exc.stdout, str) else ""
-            return {"success": False, "message": f"mapping script timeout: {output}"}
-        except Exception as exc:
-            return {"success": False, "message": f"mapping script failed: {exc}"}
-        output = (result.stdout or "").strip()
-        if result.returncode != 0:
-            return {
-                "success": False,
-                "message": output[-1600:] or f"mapping script exited with {result.returncode}",
-            }
-        return {"success": True, "message": output[-1600:] or f"mapping {action} completed"}
-
-    def _mapping_start_worker(self) -> None:
-        try:
-            result = self._run_mapping_script("start", timeout_s=140.0)
-            if self._mapping_cancel.is_set():
-                self._set_mapping_job("idle", "启动已取消")
-                return
-            if not result.get("success"):
-                self._set_mapping_job("failed", str(result.get("message", "启动失败")))
-                self._journal.add("Mapping startup failed", "error", "mapping", detail=result.get("message"))
-                return
-
-            deadline = time.monotonic() + self._mapping_ready_timeout_s
-            while time.monotonic() < deadline and not self._mapping_cancel.is_set():
-                lidar = self._lidar_rate.snapshot()
-                scan = self._scan_rate.snapshot()
-                odom = self._odom_rate.snapshot()
-                map_state = self._map_rate.snapshot()
-                if lidar.get("alive") and scan.get("alive") and odom.get("alive") and map_state.get("alive"):
-                    self._set_mapping_job("running", "建图已就绪，可开始遥控覆盖场景")
-                    self._journal.add("Mapping stack ready", "success", "mapping")
-                    return
-                time.sleep(1.0)
-
-            if self._mapping_cancel.is_set():
-                self._set_mapping_job("idle", "启动已取消")
-            else:
-                self._set_mapping_job(
-                    "degraded",
-                    "建图进程已启动，但部分数据尚未就绪，请检查 LiDAR、Scan、Odometry 和 /map",
-                )
-                self._journal.add("Mapping started with missing data", "warning", "mapping")
-        except Exception as exc:
-            self._set_mapping_job("failed", f"建图启动异常: {exc}")
-            self._node.get_logger().error(f"Mapping start worker failed: {exc}")
-
     def start_mapping(self) -> dict[str, Any]:
-        with self._lock:
-            if self._mapping_job_state == "starting":
-                return {"success": True, "message": "建图正在启动，请等待传感器就绪", "state": "starting"}
-
         process_status = self._processes.status()
         managed_navigation = bool(process_status.get("navigation", {}).get("running"))
         if self._nav2.available(0.1) and not managed_navigation:
             return {
                 "success": False,
-                "message": "检测到外部 Nav2 正在运行，请先停止导航后再开始建图",
+                "message": "an externally started Nav2 stack is active; stop it before starting mapping",
             }
-
         self._nav2.cancel_goal()
         self._processes.stop("navigation", timeout_s=5.0)
-        self._mapping_cancel.clear()
-        self._set_mapping_job("starting", "正在启动基础驱动、FAST-LIO、Scan 与 SLAM Toolbox")
-
-        if self._mapping_script_enabled:
-            self._mapping_job_thread = threading.Thread(
-                target=self._mapping_start_worker,
-                name="zsl-mapping-start",
-                daemon=True,
-            )
-            self._mapping_job_thread.start()
-            return {
-                "success": True,
-                "message": "建图启动任务已提交，页面会自动更新就绪状态",
-                "state": "starting",
-            }
-
-        result = self._processes.start("mapping", self._mapping_command)
-        self._set_mapping_job(
-            "running" if result.get("success") else "failed",
-            str(result.get("message", "")),
-        )
-        return result
+        return self._processes.start("mapping", self._mapping_command)
 
     def stop_mapping(self) -> dict[str, Any]:
-        self._mapping_cancel.set()
-        if self._mapping_script_enabled:
-            result = self._run_mapping_script("stop-mapping", timeout_s=20.0)
-        else:
-            result = self._processes.stop("mapping")
-        self._set_mapping_job("idle", "建图已停止，基础驱动保持运行")
-        return result
+        return self._processes.stop("mapping")
 
     def start_navigation(self, map_name: str) -> dict[str, Any]:
         try:
@@ -515,24 +373,18 @@ class MappingManager:
             return {"success": False, "message": str(exc)}
         if not yaml_path.exists():
             return {"success": False, "message": f"map does not exist: {map_name}"}
-        # 切换到导航前先停止网页/脚本管理的建图子栈，并等待节点退出。
-        stop_result = self.stop_mapping()
-        if not stop_result.get("success"):
-            return stop_result
-        external_slam = False
-        for _ in range(10):
-            try:
-                external_slam = "slam_toolbox" in set(self._node.get_node_names())
-            except Exception:
-                external_slam = False
-            if not external_slam:
-                break
-            time.sleep(0.5)
+        process_status = self._processes.status()
+        managed_mapping = bool(process_status.get("mapping", {}).get("running"))
+        try:
+            external_slam = "slam_toolbox" in set(self._node.get_node_names()) and not managed_mapping
+        except Exception:
+            external_slam = False
         if external_slam:
             return {
                 "success": False,
-                "message": "SLAM Toolbox 仍在运行，请确认建图已停止后再启动导航",
+                "message": "an externally started SLAM stack is active; stop it before starting navigation",
             }
+        self._processes.stop("mapping", timeout_s=5.0)
         if self._nav2.available(0.2):
             loaded = self.load_map(map_name)
             if loaded.get("success"):
@@ -570,11 +422,4 @@ class MappingManager:
             "map_count": len(self.list_maps()),
             "map_root": str(self.map_root),
             "processes": process_status,
-            "mapping_job": {
-                "state": self._mapping_job_state,
-                "message": self._mapping_job_message,
-                "started_at": self._mapping_job_started_at,
-                "script_enabled": self._mapping_script_enabled,
-                "script_path": str(self._mapping_script),
-            },
         }

@@ -1,6 +1,6 @@
 zsl_web_control_node:
   ros__parameters:
-    # 默认仅本机监听。需要局域网访问时建议配置 api_token 后再改为 0.0.0.0。
+    # 0.0.0.0 = 局域网可访问。⚠ 未配置 api_token 时存在安全风险。
     host: "0.0.0.0"
     port: 8080
     api_token: ""
@@ -30,13 +30,6 @@ zsl_web_control_node:
 
     # 只能执行这里预先配置的白名单命令，网页无法传入 shell 命令。
     # Web 节点建议先随 robot_base 启动，再由网页启动建图或导航子栈。
-    # 建图按钮默认调用已安装的 zsl_mapping.sh：自动启动 robot_base、FAST-LIO、Scan 与 SLAM。
-    mapping_script_enabled: true
-    mapping_script_path: ""       # 留空时自动使用 zsl_bringup/share/scripts/zsl_mapping.sh
-    workspace_root: ""            # 留空自动识别 ~/wheel_nav_ws 或 ~/gb_ws
-    mapping_ready_timeout_s: 60.0
-
-    # 关闭脚本模式时使用的备用命令。
     mapping_command: "ros2 launch zsl_bringup mapping.launch.py"
     navigation_command: "ros2 launch zsl_bringup managed_navigation.launch.py map_file:={map}"
     managed_log_root: "~/.ros/zsl_web_control/logs"
