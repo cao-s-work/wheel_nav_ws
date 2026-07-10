@@ -1,0 +1,16 @@
+# ZSL-1W Web Control 配置
+
+web_control:
+  ros__parameters:
+    port: 8080
+    host: "0.0.0.0"
+
+    # 安全
+    deadman_timeout_s: 0.3
+    speed_level: "slow"          # slow / normal / fast
+    lateral_enabled: false       # 横移开关（第一阶段默认关闭）
+
+    # 速度限幅
+    vx_max: 1.0
+    vy_max: 1.0
+    wz_max: 1.0

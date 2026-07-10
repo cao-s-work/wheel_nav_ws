@@ -1,0 +1,13 @@
+build/
+install/
+log/
+*.pyc
+__pycache__/
+*.swp
+*.swo
+*.swn
+*.gv
+*.pdf
+.DS_Store
+*.zip
+test.pcd

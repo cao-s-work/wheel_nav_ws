@@ -1,0 +1,67 @@
+/**:
+    ros__parameters:
+        feature_extract_enable: false
+        point_filter_num: 3
+        max_iteration: 3
+
+        # 机器狗抖动时不要太细，太细容易毛、重影
+        filter_size_surf: 0.20
+        filter_size_map: 0.30
+
+        cube_side_length: 1000.0
+        runtime_pos_log_enable: false
+        map_file_path: "./test.pcd"
+
+        common:
+            lid_topic:  "/livox/lidar"
+            imu_topic:  "/livox/imu"
+            time_sync_en: false
+            time_offset_lidar_to_imu: 0.0
+
+        preprocess:
+            lidar_type: 0
+            scan_line: 4
+
+            # 过滤机器狗自身、腿部、上装、近距离噪声
+            # 如果还能扫到狗身，改成 0.6
+            # 如果近处墙体丢太多，改成 0.35
+            blind: 0.5
+
+            timestamp_unit: 3
+            scan_rate: 10
+
+        mapping:
+            # 机器狗抖动比手持/车载大，适当增大 IMU 噪声
+            acc_cov: 0.5
+            gyr_cov: 0.2
+            b_acc_cov: 0.0005
+            b_gyr_cov: 0.0001
+
+            fov_degree: 360.0
+            det_range: 100.0
+
+            # MID360 内部 LiDAR-IMU 外参固定，不建议在线估计
+            extrinsic_est_en: false
+
+            # 这是 LiDAR 到 IMU 的内部外参，不是 16° 安装角
+            # 不要把 16° 写到这里
+            extrinsic_T: [ -0.011, -0.02329, 0.04412 ]
+            extrinsic_R: [ 1., 0., 0.,
+                           0., 1., 0.,
+                           0., 0., 1.]
+
+        publish:
+            path_en: true
+            effect_map_en: false
+            map_en: true
+            scan_publish_en: true
+
+            # 关闭 dense，减少 Jetson 压力，建图更稳
+            dense_publish_en: false
+
+            scan_bodyframe_pub_en: true
+
+        pcd_save:
+            # 短时间测试可以 true，长时间建图建议 false，避免内存越来越大
+            pcd_save_en: true
+            interval: -1

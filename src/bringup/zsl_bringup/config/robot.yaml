@@ -1,0 +1,8 @@
+# ZSL-1W Bringup 基础配置
+
+robot:
+  sdk_local_ip: "192.168.168.216"
+  sdk_local_port: 43988
+  sdk_dog_ip: "192.168.168.168"
+  read_only: true
+  cmd_vel_timeout_ms: 500

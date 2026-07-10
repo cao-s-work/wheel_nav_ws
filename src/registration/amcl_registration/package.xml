@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>amcl_registration</name>
+  <version>0.0.1</version>
+  <description>The amcl_registration package for robot localization</description>
+
+  <maintainer email="hsh@example.com">HSH</maintainer>
+  <license>Apache License 2.0</license>
+
+  <!-- 所需依赖 -->
+  <depend>nav2_amcl</depend>
+  <depend>nav2_lifecycle_manager</depend>
+  <depend>rclcpp</depend>
+  <build_depend>ament_cmake</build_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
