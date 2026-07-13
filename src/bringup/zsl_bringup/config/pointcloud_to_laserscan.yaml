@@ -1,0 +1,18 @@
+# pointcloud_to_laserscan.yaml
+# ZSL-1W 统一点云转激光配置。所有 launch 只引用这一份。
+pointcloud_to_laserscan:
+  ros__parameters:
+    target_frame: "base_link"
+    # 高度过滤 (在 target_frame 下):
+    # 负值覆盖地面附近低矮障碍，正值上限 0.10m 保留墙体底部。
+    min_height: -0.30
+    max_height: 0.10
+    angle_min: -3.14159
+    angle_max: 3.14159
+    angle_increment: 0.0087
+    scan_time: 0.10
+    # range_min 从 0.10 起步；若出现机身自反射逐步调到 0.15→0.20→0.25
+    range_min: 0.10
+    range_max: 8.0
+    use_inf: true
+    inf_epsilon: 1.0

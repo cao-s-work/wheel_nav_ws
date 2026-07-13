@@ -11,22 +11,26 @@ from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
-    read_only = LaunchConfiguration("read_only", default="true")
-    use_gpu = LaunchConfiguration("use_gpu", default="false")
-    rviz = LaunchConfiguration("rviz", default="false")
+    read_only = LaunchConfiguration("read_only")
 
-    # 1. Livox MID-360
+    # 0. 启动参数
+    # 1. Livox MID360
     livox_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
-            os.path.join(get_package_share_directory("livox_ros_driver2"),
-                         "launch_ROS2", "msg_MID360_launch.py")
-        ])
+            os.path.join(get_package_share_directory("zsl_bringup"),
+                         "launch", "mid360.launch.py")
+        ]),
+        launch_arguments={
+            "config_file": "mid360.yaml",
+            "rviz": "false",
+        }.items(),
     )
 
     # 2. FAST-LIO
+    use_gpu = LaunchConfiguration("use_gpu")
     fast_lio_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
-            os.path.join(get_package_share_directory("fast_lio"),
+            os.path.join(get_package_share_directory("zsl_bringup"),
                          "launch", "mapping.launch.py")
         ]),
         launch_arguments={
@@ -35,22 +39,18 @@ def generate_launch_description():
         }.items(),
     )
 
-    # 3. pointcloud_to_laserscan
+    # 3. pointcloud_to_laserscan（配置统一到 zsl_bringup/config/pointcloud_to_laserscan.yaml）
+    pcl_config = os.path.join(
+        get_package_share_directory("zsl_bringup"),
+        "config",
+        "pointcloud_to_laserscan.yaml",
+    )
     pcl_node = Node(
         package="pointcloud_to_laserscan",
         executable="pointcloud_to_laserscan_node",
         name="pointcloud_to_laserscan",
         output="screen",
-        parameters=[{
-            "target_frame": "base_link",
-            "min_height": -0.5,
-            "max_height": 0.5,
-            "angle_increment": 0.0087,
-            "scan_time": 0.1,
-            "range_min": 0.3,
-            "range_max": 10.0,
-            "use_inf": True,
-        }],
+        parameters=[pcl_config],
         remappings=[
             ("cloud_in", "/cloud_registered_body"),
             ("scan", "/scan"),
@@ -93,10 +93,10 @@ def generate_launch_description():
         parameters=[{
             "publish_rate": 50.0,
             "input_timeout_s": 0.30,
-            "max_vx": 0.30,
+            "max_vx": 0.25,
             "min_vx": -0.15,
             "max_vy": 0.0,
-            "max_wz": 0.50,
+            "max_wz": 0.45,
             "max_ax": 0.30,
             "max_ay": 0.0,
             "max_aw": 0.50,

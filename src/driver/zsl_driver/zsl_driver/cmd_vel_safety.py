@@ -51,8 +51,7 @@ class CmdVelSafety(Node):
         self._max_aw = self.declare_parameter("max_aw", 0.50).value
 
         # 状态
-        self._estop = False              # web 急停按钮
-        self._estop_latched = False      # zsl_driver 锁存
+        self._estop_latched = False      # zsl_driver 锁存（唯一急停源）
         self._read_only = True           # SDK 保护 / 未连接
         self._last_cmd = Twist()
         self._last_cmd_time = 0.0
@@ -64,10 +63,7 @@ class CmdVelSafety(Node):
             Twist, "cmd_vel_selected", self._cmd_cb, 10
         )
 
-        # 订阅: 安全状态（来自 web 和 zsl_driver）
-        self._estop_sub = self.create_subscription(
-            Bool, "~/estop", self._estop_cb, 10
-        )
+        # 订阅: 安全状态（来自 zsl_driver）
         self._estop_latched_sub = self.create_subscription(
             Bool, "~/estop_latched", self._estop_latched_cb, 10
         )
@@ -92,19 +88,15 @@ class CmdVelSafety(Node):
         self._last_cmd = msg
         self._last_cmd_time = time.monotonic()
 
-    def _estop_cb(self, msg: Bool):
-        """来自 web 的急停按钮。"""
-        if msg.data:
-            self._estop = True
-            self._current_output = Twist()
-            self.get_logger().warn("ESTOP (web) active!")
-
     def _estop_latched_cb(self, msg: Bool):
-        """来自 zsl_driver 的锁存急停。"""
-        if msg.data:
-            self._estop_latched = True
+        """来自 zsl_driver 的锁存急停。双向处理，可恢复。"""
+        previous = self._estop_latched
+        self._estop_latched = bool(msg.data)
+        if self._estop_latched:
             self._current_output = Twist()
-            self.get_logger().warn("ESTOP latched (driver)!")
+            self.get_logger().error("ESTOP latched (driver)")
+        elif previous:
+            self.get_logger().info("ESTOP latch cleared; read_only still applies")
 
     def _read_only_cb(self, msg: Bool):
         self._read_only = msg.data
@@ -121,26 +113,27 @@ class CmdVelSafety(Node):
             dt = _clamp(now - self._last_tick_time, 0.0, 0.1)
         self._last_tick_time = now
 
-        # --- 1. 安全闸: estop / estop_latched / read_only → 立即零速 ---
-        if self._estop or self._estop_latched or self._read_only:
+        # --- 1. 安全闸: estop_latched / read_only → 立即零速 ---
+        if self._estop_latched or self._read_only:
             self._current_output = Twist()
             self._safe_pub.publish(self._current_output)
             return
 
-        # --- 2. watchdog 输入超时: 目标速度归零 ---
+        # --- 2. watchdog 输入超时 → 立即零速（跳过 ramp）---
         stale = (
             self._last_cmd_time <= 0.0
             or now - self._last_cmd_time > self._input_timeout
         )
         if stale:
-            target = Twist()
-        else:
-            target = Twist()
-            target.linear.x = self._last_cmd.linear.x
-            target.linear.y = self._last_cmd.linear.y
-            target.angular.z = self._last_cmd.angular.z
+            self._current_output = Twist()
+            self._safe_pub.publish(self._current_output)
+            return
 
         # --- 3. 限速 clamp ---
+        target = Twist()
+        target.linear.x = self._last_cmd.linear.x
+        target.linear.y = self._last_cmd.linear.y
+        target.angular.z = self._last_cmd.angular.z
         target.linear.x = _clamp(target.linear.x, self._min_vx, self._max_vx)
         target.linear.y = _clamp(target.linear.y, -self._max_vy, self._max_vy)
         target.angular.z = _clamp(target.angular.z, -self._max_wz, self._max_wz)
