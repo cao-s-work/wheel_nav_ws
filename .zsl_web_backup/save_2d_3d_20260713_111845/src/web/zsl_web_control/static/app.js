@@ -59,9 +59,9 @@ function authHeaders() {
   return headers;
 }
 
-async function api(method, path, body, timeoutMs = 25000) {
+async function api(method, path, body) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => controller.abort(), 25000);
   try {
     const response = await fetch(path, {
       method,
@@ -362,7 +362,7 @@ function renderMapLibrary() {
       <div class="map-card-image">${preview ? `<img src="${preview}" alt="${map.name}">` : "<span>无预览</span>"}</div>
       <div class="map-card-body">
         <div class="map-card-head"><h3></h3><span class="tag ${map.active ? "good" : "neutral"}">${map.active ? "当前地图" : "可用"}</span></div>
-        <div class="map-card-meta"><span>分辨率 ${map.resolution ?? "--"}</span><span>${formatBytes(map.size_bytes || 0)}</span><span>${new Date((map.modified_at || 0) * 1000).toLocaleString("zh-CN")}</span><span>${map.mode || "trinary"}</span><span>${map.pcd_exists ? `3D PCD ${formatBytes(map.pcd_size_bytes || 0)}` : "无 3D PCD"}</span></div>
+        <div class="map-card-meta"><span>分辨率 ${map.resolution ?? "--"}</span><span>${formatBytes(map.size_bytes || 0)}</span><span>${new Date((map.modified_at || 0) * 1000).toLocaleString("zh-CN")}</span><span>${map.mode || "trinary"}</span></div>
         <div class="map-card-actions"><button class="btn primary" data-map-load>加载地图</button><button class="btn secondary" data-map-nav>启动导航</button><button class="btn danger-soft" data-map-delete ${map.active ? "disabled" : ""}>删除</button></div>
       </div>`;
     card.querySelector("h3").textContent = map.name;
@@ -402,7 +402,7 @@ async function startNavigation(name) {
 }
 
 async function deleteMap(name) {
-  const ok = await confirmAction("删除地图", `将永久删除地图“${name}”的 YAML、图像和 PCD 文件，是否继续？`);
+  const ok = await confirmAction("删除地图", `将永久删除地图“${name}”及对应图像文件，是否继续？`);
   if (!ok) return;
   const result = await api("DELETE", `/api/v1/maps/${encodeURIComponent(name)}`);
   toast(result.success ? "地图已删除" : "删除失败", result.message || "", result.success ? "success" : "error");
@@ -870,59 +870,9 @@ function bindEvents() {
   };
   $("#map-save").onclick = async () => {
     const name = $("#map-save-name").value.trim();
-    if (!name) {
-      return toast(
-        "请输入地图名称",
-        "可使用字母、数字、中文、下划线和短横线",
-        "warning"
-      );
-    }
-
-    const button = $("#map-save");
-    const oldText = button.textContent;
-    button.disabled = true;
-    button.textContent = "正在保存二维 + 三维…";
-
-    localEvent(
-      `开始保存地图 ${name}：二维 YAML/图像 + 三维 PCD`,
-      "info"
-    );
-
-    const result = await api(
-      "POST",
-      "/api/v1/maps/save",
-      { name },
-      90000
-    );
-
-    const partial = Boolean(result.partial_success);
-    const level = result.success
-      ? "success"
-      : partial
-        ? "warning"
-        : "error";
-
-    toast(
-      result.success
-        ? "二维与三维地图保存成功"
-        : partial
-          ? "地图部分保存成功"
-          : "地图保存失败",
-      result.message || "",
-      level
-    );
-    localEvent(
-      `保存地图 ${name}: ${result.message || "无返回信息"}`,
-      level
-    );
-
-    await refreshState();
-    if (result.success || partial) {
-      await refreshMaps();
-    }
-
-    button.disabled = false;
-    button.textContent = oldText;
+    if (!name) return toast("请输入地图名称", "可使用字母、数字、中文、下划线和短横线", "warning");
+    const result = await action("/api/v1/maps/save", "保存地图", { name });
+    if (result.success) refreshMaps();
   };
 
   $("#load-map").onclick = () => loadMap($("#nav-map-select").value);

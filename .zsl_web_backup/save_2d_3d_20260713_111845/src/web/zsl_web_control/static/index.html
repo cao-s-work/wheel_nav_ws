@@ -149,14 +149,14 @@
         <div class="page-grid two-col">
           <article class="panel">
             <div class="panel-head"><div><p class="kicker">SLAM WORKFLOW</p><h2>建图作业控制</h2></div><span id="mapping-tag" class="tag neutral">未运行</span></div>
-            <div class="workflow-steps"><div class="done"><i>1</i><span><b>底盘与传感器</b><small>确认 LiDAR、Scan、里程计正常</small></span></div><div><i>2</i><span><b>开始建图</b><small>启动 SLAM Toolbox</small></span></div><div><i>3</i><span><b>遥控覆盖场景</b><small>低速走完整个区域</small></span></div><div><i>4</i><span><b>保存地图</b><small>生成 YAML、PNG/PGM 与 PCD</small></span></div></div>
+            <div class="workflow-steps"><div class="done"><i>1</i><span><b>底盘与传感器</b><small>确认 LiDAR、Scan、里程计正常</small></span></div><div><i>2</i><span><b>开始建图</b><small>启动 SLAM Toolbox</small></span></div><div><i>3</i><span><b>遥控覆盖场景</b><small>低速走完整个区域</small></span></div><div><i>4</i><span><b>保存地图</b><small>生成 YAML 与 PNG/PGM</small></span></div></div>
             <div class="button-row"><button id="mapping-start" class="btn primary">开始建图</button><button id="mapping-stop" class="btn secondary">停止建图</button></div>
             <div id="mapping-job-notice" class="notice info"><b>建图未启动</b><span id="mapping-job-message">点击“开始建图”后，系统将自动启动基础驱动、FAST-LIO、Scan 和 SLAM Toolbox。</span></div>
             <div class="form-block">
               <label>地图名称<input id="map-save-name" maxlength="64" placeholder="例如 warehouse_floor_1" /></label>
-              <button id="map-save" class="btn success">保存二维地图 + 三维 PCD</button>
+              <button id="map-save" class="btn success">保存当前地图</button>
             </div>
-            <div class="notice warning"><b>安全提示</b><span>开始建图会进入人工保持并取消当前导航；保存前应确认 /map、LiDAR 与 Odometry 正常；大型 PCD 可能需要几十秒。</span></div>
+            <div class="notice warning"><b>安全提示</b><span>开始建图会进入人工保持并取消当前导航；保存地图前应确认 /map 正常输出。</span></div>
           </article>
           <article class="panel">
             <div class="panel-head"><div><p class="kicker">LIVE MAPPING</p><h2>实时建图状态</h2></div></div>

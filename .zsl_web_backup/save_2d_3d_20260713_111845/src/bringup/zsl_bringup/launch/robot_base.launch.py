@@ -1,7 +1,5 @@
-"""ZSL-1W base stack: MID360 + FAST-LIO + scan + safe motion chain."""
+"""ZSL-1W 基础链路：Livox + FAST-LIO + Scan + 控制安全链。"""
 import os
-from pathlib import Path
-
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -14,72 +12,61 @@ def generate_launch_description():
     read_only = LaunchConfiguration("read_only")
     use_sim_time = LaunchConfiguration("use_sim_time")
     rviz = LaunchConfiguration("rviz")
-    pcd_staging_path = LaunchConfiguration("pcd_staging_path")
+    # 保留兼容参数；当前 CPU FAST-LIO 启动文件暂未使用它。
+    use_gpu = LaunchConfiguration("use_gpu")
 
-    default_pcd_staging = str(
-        Path.home()
-        / "gb_maps"
-        / ".pcd_staging"
-        / "fast_lio_map.pcd"
+    # ------------------------------------------------------------------
+    # 1. Livox MID360 驱动
+    # ------------------------------------------------------------------
+    livox_launch_file = os.path.join(
+        get_package_share_directory("livox_ros_driver2"),
+        "launch",
+        "msg_MID360_launch.py",
     )
-    Path(default_pcd_staging).parent.mkdir(
-        parents=True, exist_ok=True
-    )
-
-    # 1. Livox MID360 driver
     livox_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                get_package_share_directory("zsl_bringup"),
-                "launch",
-                "mid360.launch.py",
-            )
-        ),
-        launch_arguments={
-            "config_file": "mid360.yaml",
-            "rviz": "false",
-        }.items(),
+        PythonLaunchDescriptionSource(livox_launch_file),
     )
 
-    # 2. FAST-LIO.
-    # Important: include fast_lio's launch directly. zsl_bringup/mapping.launch.py
-    # is the SLAM Toolbox 2D sub-stack and must not be used here.
+    # ------------------------------------------------------------------
+    # 2. FAST-LIO
+    # ------------------------------------------------------------------
+    fast_lio_launch_file = os.path.join(
+        get_package_share_directory("fast_lio"),
+        "launch",
+        "mapping.launch.py",
+    )
     fast_lio_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(
-                get_package_share_directory("fast_lio"),
-                "launch",
-                "mapping.launch.py",
-            )
-        ),
+        PythonLaunchDescriptionSource(fast_lio_launch_file),
         launch_arguments={
             "config_file": "mid360.yaml",
             "use_sim_time": use_sim_time,
             "rviz": rviz,
-            "map_file_path": pcd_staging_path,
-            "pcd_save_en": "true",
         }.items(),
     )
 
-    # 3. Registered cloud -> LaserScan
-    pcl_config = os.path.join(
+    # ------------------------------------------------------------------
+    # 3. PointCloud2 -> LaserScan
+    # ------------------------------------------------------------------
+    pointcloud_config = os.path.join(
         get_package_share_directory("zsl_bringup"),
         "config",
         "pointcloud_to_laserscan.yaml",
     )
-    pcl_node = Node(
+    pointcloud_to_scan_node = Node(
         package="pointcloud_to_laserscan",
         executable="pointcloud_to_laserscan_node",
         name="pointcloud_to_laserscan",
         output="screen",
-        parameters=[pcl_config],
+        parameters=[pointcloud_config],
         remappings=[
             ("cloud_in", "/cloud_registered_body"),
             ("scan", "/scan"),
         ],
     )
 
-    # 4. Robot SDK driver
+    # ------------------------------------------------------------------
+    # 4. ZSL 驱动
+    # ------------------------------------------------------------------
     zsl_driver_node = Node(
         package="zsl_driver",
         executable="zsl_driver_node",
@@ -96,7 +83,9 @@ def generate_launch_description():
         ],
     )
 
-    # 5. Nav / Web velocity arbitration
+    # ------------------------------------------------------------------
+    # 5. 速度仲裁
+    # ------------------------------------------------------------------
     cmd_vel_mux_node = Node(
         package="zsl_driver",
         executable="cmd_vel_mux",
@@ -110,7 +99,9 @@ def generate_launch_description():
         ],
     )
 
-    # 6. Final speed safety layer
+    # ------------------------------------------------------------------
+    # 6. 最终安全层
+    # ------------------------------------------------------------------
     safety_node = Node(
         package="zsl_driver",
         executable="cmd_vel_safety",
@@ -134,34 +125,35 @@ def generate_launch_description():
                 "~/estop_latched",
                 "/zsl_driver_node/estop_latched",
             ),
-            ("~/read_only", "/zsl_driver_node/read_only"),
+            (
+                "~/read_only",
+                "/zsl_driver_node/read_only",
+            ),
         ],
     )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument(
-                "read_only", default_value="true"
+                "read_only",
+                default_value="true",
             ),
             DeclareLaunchArgument(
-                "use_sim_time", default_value="false"
+                "use_sim_time",
+                default_value="false",
             ),
-            # Kept for compatibility with existing commands.
             DeclareLaunchArgument(
-                "use_gpu", default_value="false"
+                "rviz",
+                default_value="false",
             ),
-            DeclareLaunchArgument("rviz", default_value="false"),
             DeclareLaunchArgument(
-                "pcd_staging_path",
-                default_value=default_pcd_staging,
-                description=(
-                    "FAST-LIO temporary PCD output path. Must match "
-                    "zsl_web_control pcd_staging_path."
-                ),
+                "use_gpu",
+                default_value="false",
+                description="Reserved for future GPU FAST-LIO selection",
             ),
             livox_launch,
             fast_lio_launch,
-            pcl_node,
+            pointcloud_to_scan_node,
             zsl_driver_node,
             cmd_vel_mux_node,
             safety_node,

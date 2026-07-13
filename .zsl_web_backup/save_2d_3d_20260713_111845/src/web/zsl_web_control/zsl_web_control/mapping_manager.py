@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import struct
 import subprocess
 import threading
@@ -21,7 +20,6 @@ from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
-from std_srvs.srv import Trigger
 
 from .nav2_client import Nav2Client
 from .process_manager import ProcessManager
@@ -83,24 +81,8 @@ class MappingManager:
         if self._image_format not in {"png", "pgm", "bmp"}:
             self._image_format = "png"
 
-        self._pcd_save_service_name = str(
-            node.get_parameter("pcd_save_service").value
-        )
-        self._pcd_staging_path = Path(
-            os.path.expanduser(str(node.get_parameter("pcd_staging_path").value))
-        ).resolve()
-        self._pcd_staging_path.parent.mkdir(parents=True, exist_ok=True)
-        self._pcd_save_timeout_s = max(
-            5.0, float(node.get_parameter("pcd_save_timeout_s").value)
-        )
-        self._pcd_required = bool(node.get_parameter("pcd_required").value)
-        self._save_bundle_lock = threading.Lock()
-
         self._save_client = node.create_client(SaveMap, self._save_service_name)
         self._load_client = node.create_client(LoadMap, self._load_service_name)
-        self._pcd_save_client = node.create_client(
-            Trigger, self._pcd_save_service_name
-        )
 
         sensor_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         map_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
@@ -201,18 +183,12 @@ class MappingManager:
                 metadata = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
                 image_path = self._resolve_image(yaml_path, metadata)
                 stat = yaml_path.stat()
-                pcd_path = yaml_path.with_suffix(".pcd")
-                pcd_exists = pcd_path.exists() and pcd_path.is_file()
-                pcd_size = pcd_path.stat().st_size if pcd_exists else 0
                 maps.append(
                     {
                         "name": yaml_path.stem,
                         "yaml_path": str(yaml_path),
                         "image_path": str(image_path) if image_path else None,
                         "image_exists": bool(image_path and image_path.exists()),
-                        "pcd_path": str(pcd_path),
-                        "pcd_exists": pcd_exists,
-                        "pcd_size_bytes": pcd_size,
                         "resolution": metadata.get("resolution"),
                         "origin": metadata.get("origin"),
                         "mode": metadata.get("mode", "trinary"),
@@ -220,15 +196,7 @@ class MappingManager:
                         "occupied_thresh": metadata.get("occupied_thresh"),
                         "free_thresh": metadata.get("free_thresh"),
                         "modified_at": stat.st_mtime,
-                        "size_bytes": (
-                            stat.st_size
-                            + (
-                                image_path.stat().st_size
-                                if image_path and image_path.exists()
-                                else 0
-                            )
-                            + pcd_size
-                        ),
+                        "size_bytes": stat.st_size + (image_path.stat().st_size if image_path and image_path.exists() else 0),
                         "active": yaml_path.stem == self._active_map,
                         "preview_url": f"/api/v1/maps/{quote(yaml_path.stem)}/preview?v={int(stat.st_mtime)}",
                     }
@@ -251,8 +219,11 @@ class MappingManager:
                 return item
         return None
 
-    def _save_2d_map(self, safe: str) -> dict[str, Any]:
-        """Save the current OccupancyGrid as YAML + image."""
+    def save_map(self, name: str) -> dict[str, Any]:
+        try:
+            safe = self._valid_name(name)
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
         prefix = (self.map_root / safe).resolve()
 
         if self._save_client.wait_for_service(timeout_sec=1.5):
@@ -264,47 +235,19 @@ class MappingManager:
             request.free_thresh = 0.25
             request.occupied_thresh = 0.65
             future = self._save_client.call_async(request)
-            ok, response, error = wait_future(future, 15.0)
+            ok, response, error = wait_future(future, 20.0)
             if ok and response is not None and bool(response.result):
-                yaml_path = prefix.with_suffix(".yaml")
-                detail = self.map_detail(safe)
-                return {
-                    "success": bool(yaml_path.exists()),
-                    "message": (
-                        "2D map saved"
-                        if yaml_path.exists()
-                        else "SaveMap returned success but YAML is missing"
-                    ),
-                    "yaml_path": str(yaml_path),
-                    "image_path": detail.get("image_path") if detail else None,
-                }
+                self._journal.add(f"Map saved: {safe}", "success", "mapping")
+                return {"success": True, "message": f"map {safe} saved", "map": self.map_detail(safe)}
             if not self._allow_cli_fallback:
-                return {
-                    "success": False,
-                    "message": (
-                        f"SaveMap failed: {error or 'server returned false'}"
-                    ),
-                }
+                return {"success": False, "message": f"SaveMap failed: {error or 'server returned false'}"}
 
         if not self._allow_cli_fallback:
-            return {
-                "success": False,
-                "message": (
-                    "map saver service unavailable: "
-                    f"{self._save_service_name}"
-                ),
-            }
+            return {"success": False, "message": f"map saver service unavailable: {self._save_service_name}"}
 
         try:
             result = subprocess.run(
-                [
-                    "ros2",
-                    "run",
-                    "nav2_map_server",
-                    "map_saver_cli",
-                    "-f",
-                    str(prefix),
-                ],
+                ["ros2", "run", "nav2_map_server", "map_saver_cli", "-f", str(prefix)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -313,236 +256,11 @@ class MappingManager:
                 text=True,
             )
         except Exception as exc:
-            return {
-                "success": False,
-                "message": f"map_saver_cli failed: {exc}",
-            }
-
+            return {"success": False, "message": f"map_saver_cli failed: {exc}"}
         if result.returncode != 0:
-            return {
-                "success": False,
-                "message": result.stdout[-800:] or "map_saver_cli failed",
-            }
-
-        yaml_path = prefix.with_suffix(".yaml")
-        detail = self.map_detail(safe)
-        return {
-            "success": bool(yaml_path.exists()),
-            "message": (
-                "2D map saved with CLI fallback"
-                if yaml_path.exists()
-                else "map_saver_cli ended without a YAML file"
-            ),
-            "yaml_path": str(yaml_path),
-            "image_path": detail.get("image_path") if detail else None,
-        }
-
-    def _save_3d_pcd(self, safe: str) -> dict[str, Any]:
-        """Trigger FAST-LIO PCD save and atomically install the result."""
-        final_path = (self.map_root / f"{safe}.pcd").resolve()
-        if self.map_root not in final_path.parents:
-            return {"success": False, "message": "invalid PCD path"}
-
-        try:
-            self._pcd_staging_path.parent.mkdir(
-                parents=True, exist_ok=True
-            )
-            # Remove old staging output so a stale file cannot be accepted.
-            if self._pcd_staging_path.exists():
-                self._pcd_staging_path.unlink()
-        except Exception as exc:
-            return {
-                "success": False,
-                "message": f"cannot prepare PCD staging path: {exc}",
-            }
-
-        if not self._pcd_save_client.wait_for_service(timeout_sec=2.0):
-            return {
-                "success": False,
-                "message": (
-                    "FAST-LIO PCD service unavailable: "
-                    f"{self._pcd_save_service_name}"
-                ),
-            }
-
-        started_at = time.time()
-        future = self._pcd_save_client.call_async(Trigger.Request())
-        ok, response, error = wait_future(
-            future, self._pcd_save_timeout_s
-        )
-        if not ok or response is None:
-            return {
-                "success": False,
-                "message": f"FAST-LIO PCD save timeout/error: {error}",
-            }
-        if not bool(response.success):
-            return {
-                "success": False,
-                "message": (
-                    response.message
-                    or "FAST-LIO rejected PCD save request"
-                ),
-            }
-
-        # The service is synchronous, but allow a short filesystem delay.
-        deadline = time.monotonic() + 3.0
-        while (
-            time.monotonic() < deadline
-            and not self._pcd_staging_path.exists()
-        ):
-            time.sleep(0.05)
-
-        try:
-            stat = self._pcd_staging_path.stat()
-        except FileNotFoundError:
-            return {
-                "success": False,
-                "message": (
-                    "FAST-LIO reported success but staging PCD is missing: "
-                    f"{self._pcd_staging_path}"
-                ),
-            }
-        except Exception as exc:
-            return {
-                "success": False,
-                "message": f"cannot stat staging PCD: {exc}",
-            }
-
-        if stat.st_size < 1024:
-            return {
-                "success": False,
-                "message": (
-                    f"PCD file is unexpectedly small ({stat.st_size} B)"
-                ),
-            }
-        if stat.st_mtime + 1.0 < started_at:
-            return {
-                "success": False,
-                "message": "PCD staging file is stale",
-            }
-
-        try:
-            # Both paths normally live under ~/gb_maps, so os.replace is
-            # atomic and does not duplicate a large point cloud in memory.
-            os.replace(self._pcd_staging_path, final_path)
-        except OSError:
-            # Fallback for a custom staging path on another filesystem.
-            temp_path = final_path.with_suffix(".pcd.partial")
-            try:
-                shutil.copy2(self._pcd_staging_path, temp_path)
-                os.replace(temp_path, final_path)
-                self._pcd_staging_path.unlink(missing_ok=True)
-            except Exception as exc:
-                temp_path.unlink(missing_ok=True)
-                return {
-                    "success": False,
-                    "message": f"cannot install PCD file: {exc}",
-                }
-
-        final_stat = final_path.stat()
-        return {
-            "success": True,
-            "message": "3D PCD saved",
-            "pcd_path": str(final_path),
-            "size_bytes": final_stat.st_size,
-        }
-
-    def save_map(self, name: str) -> dict[str, Any]:
-        """Save one named scene as 2D map files and a 3D FAST-LIO PCD."""
-        try:
-            safe = self._valid_name(name)
-        except ValueError as exc:
-            return {"success": False, "message": str(exc)}
-
-        if not self._save_bundle_lock.acquire(blocking=False):
-            return {
-                "success": False,
-                "message": "another map save job is already running",
-            }
-
-        try:
-            map_state = self._map_rate.snapshot()
-            if not bool(map_state.get("alive")):
-                return {
-                    "success": False,
-                    "message": "/map is not alive; 2D map cannot be saved",
-                }
-
-            lidar_state = self._lidar_rate.snapshot()
-            odom_state = self._odom_rate.snapshot()
-            if not bool(lidar_state.get("alive")):
-                return {
-                    "success": False,
-                    "message": (
-                        "LiDAR is not alive; refusing to save an invalid "
-                        "3D map"
-                    ),
-                }
-            if not bool(odom_state.get("alive")):
-                return {
-                    "success": False,
-                    "message": (
-                        "odometry is not alive; refusing to save an "
-                        "invalid 3D map"
-                    ),
-                }
-
-            two_d = self._save_2d_map(safe)
-            three_d = self._save_3d_pcd(safe)
-
-            both_ok = bool(two_d.get("success")) and bool(
-                three_d.get("success")
-            )
-            partial = bool(two_d.get("success")) != bool(
-                three_d.get("success")
-            )
-
-            if both_ok:
-                message = (
-                    f"地图 {safe} 已保存：二维 YAML/图像 + 三维 PCD"
-                )
-                level = "success"
-            elif partial:
-                message = (
-                    f"地图 {safe} 部分保存成功；"
-                    f"2D: {two_d.get('message')}; "
-                    f"3D: {three_d.get('message')}"
-                )
-                level = "warning"
-            else:
-                message = (
-                    f"地图 {safe} 保存失败；"
-                    f"2D: {two_d.get('message')}; "
-                    f"3D: {three_d.get('message')}"
-                )
-                level = "error"
-
-            if not self._pcd_required and bool(two_d.get("success")):
-                both_ok = True
-
-            self._journal.add(
-                message,
-                level,
-                "mapping",
-                detail={
-                    "name": safe,
-                    "map_2d": two_d,
-                    "pcd_3d": three_d,
-                },
-            )
-            return {
-                "success": both_ok,
-                "partial_success": partial,
-                "message": message,
-                "name": safe,
-                "artifacts": {
-                    "map_2d": two_d,
-                    "pcd_3d": three_d,
-                },
-                "map": self.map_detail(safe),
-            }
-        finally:
-            self._save_bundle_lock.release()
+            return {"success": False, "message": result.stdout[-800:] or "map_saver_cli failed"}
+        self._journal.add(f"Map saved with CLI fallback: {safe}", "success", "mapping")
+        return {"success": True, "message": f"map {safe} saved", "map": self.map_detail(safe)}
 
     def load_map(self, name: str) -> dict[str, Any]:
         try:
@@ -581,9 +299,6 @@ class MappingManager:
             yaml_path.unlink()
             if image_path and image_path.exists() and image_path.parent == self.map_root:
                 image_path.unlink()
-            pcd_path = yaml_path.with_suffix(".pcd")
-            if pcd_path.exists() and pcd_path.parent == self.map_root:
-                pcd_path.unlink()
             preview = self._preview_root / f"{name}.png"
             if preview.exists():
                 preview.unlink()
@@ -870,11 +585,6 @@ class MappingManager:
             "active_map": self._active_map,
             "map_count": len(self.list_maps()),
             "map_root": str(self.map_root),
-            "pcd_save": {
-                "service": self._pcd_save_service_name,
-                "staging_path": str(self._pcd_staging_path),
-                "required": self._pcd_required,
-            },
             "processes": process_status,
             "mapping_job": {
                 "state": self._mapping_job_state,
