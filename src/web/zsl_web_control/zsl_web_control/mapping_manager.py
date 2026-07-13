@@ -75,6 +75,7 @@ class MappingManager:
         self._odom_topic = str(node.get_parameter("odom_topic").value)
         self._save_service_name = str(node.get_parameter("map_save_service").value)
         self._load_service_name = str(node.get_parameter("map_load_service").value)
+        self._topic_rates_topic = str(node.get_parameter("topic_rates_topic").value)
         self._allow_cli_fallback = bool(node.get_parameter("map_save_cli_fallback").value)
         self._image_format = str(node.get_parameter("map_image_format").value).lower()
         if self._image_format not in {"png", "pgm", "bmp"}:
@@ -94,7 +95,7 @@ class MappingManager:
         node.create_subscription(OccupancyGrid, self._map_topic, self._map_cb, map_qos)
         node.create_subscription(
             String,
-            "/system/topic_rates",
+            self._topic_rates_topic,
             self._topic_rates_cb,
             10,
         )

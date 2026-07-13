@@ -6,8 +6,6 @@
   <maintainer email="nvidia@localhost">nvidia</maintainer>
   <license>MIT</license>
 
-  <buildtool_depend>ament_python</buildtool_depend>
-
   <depend>rclpy</depend>
   <depend>ament_index_python</depend>
   <depend>std_msgs</depend>

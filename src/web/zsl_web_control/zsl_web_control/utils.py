@@ -106,10 +106,15 @@ class RemoteRateState:
 
     Maintains the same snapshot() interface as RateTracker so existing callers
     (mapping start worker, status()) need zero changes.
+
+    If no update arrives within stale_timeout_s, snapshot() returns
+    hz=0.0 / alive=False — so consumers can detect a crashed monitor node.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, stale_timeout_s: float = 2.0) -> None:
         self._lock = threading.Lock()
+        self._stale_timeout_s = max(1.0, stale_timeout_s)
+        self._received_at = 0.0
         self._data: dict[str, Any] = {
             "hz": 0.0,
             "alive": False,
@@ -117,7 +122,9 @@ class RemoteRateState:
         }
 
     def update(self, data: dict[str, Any]) -> None:
+        now = time.monotonic()
         with self._lock:
+            self._received_at = now
             self._data = {
                 "hz": float(data.get("hz", 0.0)),
                 "alive": bool(data.get("alive", False)),
@@ -125,5 +132,17 @@ class RemoteRateState:
             }
 
     def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
         with self._lock:
-            return dict(self._data)
+            data = dict(self._data)
+            received_at = self._received_at
+        monitor_age = now - received_at if received_at > 0.0 else -1.0
+        if received_at <= 0.0 or monitor_age > self._stale_timeout_s:
+            return {
+                "hz": 0.0,
+                "alive": False,
+                "age_s": -1.0,
+                "monitor_age_s": round(monitor_age, 3) if monitor_age >= 0.0 else -1.0,
+            }
+        data["monitor_age_s"] = round(monitor_age, 3)
+        return data

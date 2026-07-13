@@ -18,6 +18,7 @@ zsl_web_control_node:
     map_topic: "/map"
     lidar_topic: "/livox/lidar"
     scan_topic: "/scan"
+    topic_rates_topic: "/system/topic_rates"
 
     # 实时建图画面：/map 栅格 + TF 机器人位姿 + /scan 激光点 + 运动轨迹
     live_map_enabled: true

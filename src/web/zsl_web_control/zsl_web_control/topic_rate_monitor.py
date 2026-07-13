@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import deque
 from typing import Any
 
 import rclpy
@@ -42,9 +43,9 @@ class TopicRateMonitor(Node):
 
         self._tick_lock = threading.Lock()
         self._sub: dict[str, dict[str, Any]] = {
-            "lidar":     {"topic": self._lidar_topic, "samples": [], "last": 0.0},
-            "scan":      {"topic": self._scan_topic,  "samples": [], "last": 0.0},
-            "odometry":  {"topic": self._odom_topic,  "samples": [], "last": 0.0},
+            "lidar":     {"topic": self._lidar_topic, "samples": deque(), "last": 0.0},
+            "scan":      {"topic": self._scan_topic,  "samples": deque(), "last": 0.0},
+            "odometry":  {"topic": self._odom_topic,  "samples": deque(), "last": 0.0},
         }
 
         sensor_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -75,28 +76,31 @@ class TopicRateMonitor(Node):
             entry = self._sub[key]
             entry["samples"].append(now)
             entry["last"] = now
-            cutoff = now - self._rate_window
-            while entry["samples"] and entry["samples"][0] < cutoff:
-                entry["samples"].pop(0)
 
     def _snapshot(self, key: str, now: float) -> dict[str, Any]:
         with self._tick_lock:
             entry = self._sub[key]
-            samples = list(entry["samples"])
-            last = entry["last"]
+            samples = entry["samples"]
+            cutoff = now - self._rate_window
+            while samples and samples[0] < cutoff:
+                samples.popleft()
+            sample_copy = list(samples)
+            last = float(entry["last"])
+            topic = str(entry["topic"])
 
-        if len(samples) >= 2:
-            elapsed = max(1e-6, samples[-1] - samples[0])
-            hz = round((len(samples) - 1) / elapsed, 2)
+        age = now - last if last > 0.0 else -1.0
+        alive = last > 0.0 and age <= self._alive_timeout
+        if alive and len(sample_copy) >= 2:
+            elapsed = max(1e-6, sample_copy[-1] - sample_copy[0])
+            hz = round((len(sample_copy) - 1) / elapsed, 2)
         else:
             hz = 0.0
 
-        age = now - last if last > 0 else -1.0
         return {
-            "topic": entry["topic"],
+            "topic": topic,
             "hz": hz,
-            "alive": last > 0 and age <= self._alive_timeout,
-            "age_s": round(age, 3) if age >= 0 else -1.0,
+            "alive": alive,
+            "age_s": round(age, 3) if age >= 0.0 else -1.0,
         }
 
     def _publish(self) -> None:

@@ -138,6 +138,7 @@ class WebControlNode(Node):
             "map_topic": "/map",
             "lidar_topic": "/livox/lidar",
             "scan_topic": "/scan",
+            "topic_rates_topic": "/system/topic_rates",
             "live_map_enabled": True,
             "live_map_frame": "map",
             "live_robot_frame": "base_link",
