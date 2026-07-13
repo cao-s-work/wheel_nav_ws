@@ -23,5 +23,20 @@ def generate_launch_description():
                 output="screen",
                 parameters=[config_file],
             ),
+            Node(
+                package="zsl_web_control",
+                executable="topic_rate_monitor",
+                name="topic_rate_monitor",
+                output="screen",
+                parameters=[{
+                    "lidar_topic": "/livox/lidar",
+                    "scan_topic": "/scan",
+                    "odom_topic": "/Odometry",
+                    "output_topic": "/system/topic_rates",
+                    "publish_period_s": 0.5,
+                    "rate_window_s": 2.0,
+                    "alive_timeout_s": 1.5,
+                }],
+            ),
         ]
     )

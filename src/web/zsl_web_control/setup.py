@@ -13,6 +13,7 @@ setup(
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
         ("share/" + package_name + "/static", glob("static/*")),
+        ("share/" + package_name + "/hook", glob("hook/*")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -24,6 +25,7 @@ setup(
     entry_points={
         "console_scripts": [
             "web_control_node = zsl_web_control.web_node:main",
+            "topic_rate_monitor = zsl_web_control.topic_rate_monitor:main",
         ],
     },
 )

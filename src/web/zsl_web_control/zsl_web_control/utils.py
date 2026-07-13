@@ -99,3 +99,31 @@ class RateTracker:
             "age_s": round(age, 3) if age >= 0 else -1.0,
             "alive": bool(last > 0 and age <= max(2.0, self._window_s)),
         }
+
+
+class RemoteRateState:
+    """Lightweight cache for rate data received from external topic_rate_monitor.
+
+    Maintains the same snapshot() interface as RateTracker so existing callers
+    (mapping start worker, status()) need zero changes.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._data: dict[str, Any] = {
+            "hz": 0.0,
+            "alive": False,
+            "age_s": -1.0,
+        }
+
+    def update(self, data: dict[str, Any]) -> None:
+        with self._lock:
+            self._data = {
+                "hz": float(data.get("hz", 0.0)),
+                "alive": bool(data.get("alive", False)),
+                "age_s": float(data.get("age_s", -1.0)),
+            }
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._data)

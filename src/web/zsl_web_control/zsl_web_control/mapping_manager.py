@@ -16,14 +16,14 @@ from urllib.parse import quote
 import yaml
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from nav2_msgs.srv import LoadMap, SaveMap
-from nav_msgs.msg import OccupancyGrid, Odometry
+from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
-from sensor_msgs.msg import LaserScan, PointCloud2
+from std_msgs.msg import String
 
 from .nav2_client import Nav2Client
 from .process_manager import ProcessManager
-from .utils import EventJournal, RateTracker, wait_future
+from .utils import EventJournal, RateTracker, RemoteRateState, wait_future
 
 
 class MappingManager:
@@ -85,16 +85,19 @@ class MappingManager:
 
         sensor_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         map_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
-        self._lidar_rate = RateTracker()
-        self._scan_rate = RateTracker()
-        self._odom_rate = RateTracker()
+        self._lidar_rate = RemoteRateState()
+        self._scan_rate = RemoteRateState()
+        self._odom_rate = RemoteRateState()
         self._map_rate = RateTracker(window_s=10.0)
         self._map_info: dict[str, Any] | None = None
 
-        node.create_subscription(PointCloud2, self._lidar_topic, lambda _: self._lidar_rate.tick(), sensor_qos)
-        node.create_subscription(LaserScan, self._scan_topic, lambda _: self._scan_rate.tick(), sensor_qos)
-        node.create_subscription(Odometry, self._odom_topic, lambda _: self._odom_rate.tick(), sensor_qos)
         node.create_subscription(OccupancyGrid, self._map_topic, self._map_cb, map_qos)
+        node.create_subscription(
+            String,
+            "/system/topic_rates",
+            self._topic_rates_cb,
+            10,
+        )
 
         self._active_map = self._read_active_map()
 
@@ -119,6 +122,18 @@ class MappingManager:
                 "frame_id": msg.header.frame_id,
                 "cells": int(msg.info.width * msg.info.height),
             }
+
+    def _topic_rates_cb(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+            topics = payload.get("topics", {})
+            self._lidar_rate.update(topics.get("lidar", {}))
+            self._scan_rate.update(topics.get("scan", {}))
+            self._odom_rate.update(topics.get("odometry", {}))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            self._node.get_logger().warning(
+                f"Invalid topic rate message: {exc}"
+            )
 
     def _read_active_map(self) -> str | None:
         try:
